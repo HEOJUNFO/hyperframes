@@ -38,6 +38,39 @@ const unite = (a: Rect, b: Rect): Rect => ({
   bottom: Math.max(a.bottom, b.bottom),
 });
 
+// Hidden, or its own out-of-flow box: its text is not an ancestor's to draw.
+const closesText = (el: Element, s: CSSStyleDeclaration): boolean =>
+  s.display === "none" ||
+  s.position === "absolute" ||
+  s.position === "fixed" ||
+  (Number.parseFloat(s.opacity) <= 0.01 && !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR));
+
+// Too far above or below the pointer's row for its lines to reach it; a box may hold lines up to
+// about ten times its own font.
+function farFromRow(r: DOMRect, s: CSSStyleDeclaration, y: number): boolean {
+  if (r.width <= 0 && r.height <= 0) return false;
+  const byFont = 3 * (Number.parseFloat(s.fontSize) || 16);
+  const reach = Math.max(byFont, Math.min(2 * r.height, (20 * byFont) / 3));
+  return y < r.top - reach || y > r.bottom + reach;
+}
+
+// On the border's band, scaled with the element on each axis; not in the box it frames.
+function onBorderBand(el: Element, s: CSSStyleDeclaration, x: number, y: number): boolean {
+  const [top, right, bottom, left] = borderWidths(s) as [number, number, number, number];
+  if (!(top || right || bottom || left)) return false;
+  const r = el.getBoundingClientRect();
+  const { offsetWidth, offsetHeight } = el as HTMLElement;
+  const kx = offsetWidth > 0 ? r.width / offsetWidth : 1;
+  const ky = offsetHeight > 0 ? r.height / offsetHeight : 1;
+  const inner = {
+    left: r.left + left * kx,
+    right: r.right - right * kx,
+    top: r.top + top * ky,
+    bottom: r.bottom - bottom * ky,
+  };
+  return !holds(inner, x, y);
+}
+
 /** Glyphs side by side on one line, no further apart than two line heights, join into one line box. */
 function lineBoxes(glyphs: readonly Rect[]): Rect[] {
   const lines: Rect[] = [];
@@ -78,21 +111,11 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
   const closedBox = new Map<Element, boolean>();
   const shownTextNode = new Map<Node, boolean>();
 
-  // Hidden, its own out-of-flow box, or a box too far from the pointer's row for its text to reach it.
   const closed = (el: Element): boolean => {
     let known = closedBox.get(el);
     if (known === undefined) {
       const s = view!.getComputedStyle(el);
-      const faded =
-        Number.parseFloat(s.opacity) <= 0.01 && !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR);
-      known = s.display === "none" || faded || s.position === "absolute" || s.position === "fixed";
-      if (!known && layout) {
-        const r = el.getBoundingClientRect();
-        const byFont = 3 * (Number.parseFloat(s.fontSize) || 16);
-        // A box may hold lines bigger than its own font, up to about ten times it.
-        const reach = Math.max(byFont, Math.min(2 * r.height, (20 * byFont) / 3));
-        known = (r.width > 0 || r.height > 0) && (y < r.top - reach || y > r.bottom + reach);
-      }
+      known = closesText(el, s) || (layout && farFromRow(el.getBoundingClientRect(), s, y));
       closedBox.set(el, known);
     }
     return known;
@@ -149,25 +172,12 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
     return s.content !== '""' || paints(s) || borderWidths(s).some((w) => w > 0);
   }
 
-  // A border draws on its band, not across the box it frames; an outer shadow draws outside the box.
-  function decoratedAt(el: Element, s: CSSStyleDeclaration): boolean {
-    if (/inset/.test(s.boxShadow)) return true;
-    const [top, right, bottom, left] = borderWidths(s) as [number, number, number, number];
-    if (top || right || bottom || left) {
-      const r = el.getBoundingClientRect();
-      const { offsetWidth, offsetHeight } = el as HTMLElement;
-      const kx = offsetWidth > 0 ? r.width / offsetWidth : 1;
-      const ky = offsetHeight > 0 ? r.height / offsetHeight : 1;
-      const inner = {
-        left: r.left + left * kx,
-        right: r.right - right * kx,
-        top: r.top + top * ky,
-        bottom: r.bottom - bottom * ky,
-      };
-      if (!holds(inner, x, y)) return true;
-    }
-    return pseudoDraws(el, "::before") || pseudoDraws(el, "::after");
-  }
+  // An outer shadow draws outside the box, so only an inset one counts.
+  const decoratedAt = (el: Element, s: CSSStyleDeclaration): boolean =>
+    /inset/.test(s.boxShadow) ||
+    onBorderBand(el, s, x, y) ||
+    pseudoDraws(el, "::before") ||
+    pseudoDraws(el, "::after");
 
   return (el) => {
     if (PICTURES.has(el.tagName)) return true;

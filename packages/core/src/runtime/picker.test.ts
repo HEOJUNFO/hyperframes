@@ -42,6 +42,16 @@ function emulateHitTest(painted: () => Element[]): () => void {
     Object.defineProperty(document, "elementsFromPoint", { configurable: true, value: original });
 }
 
+// The selectors getCandidatesAtPoint(10, 10) returns while the hit test yields `stack`.
+function candidatesUnder(stack: () => Element[]): string[] {
+  const restore = emulateHitTest(stack);
+  try {
+    return (window as any).__HF_PICKER_API.getCandidatesAtPoint(10, 10).map((c: any) => c.selector);
+  } finally {
+    restore();
+  }
+}
+
 function createMockPostMessage() {
   return vi.fn();
 }
@@ -210,16 +220,10 @@ describe("createPickerModule", () => {
       document.body.innerHTML = `<div id="root" data-composition-id="intro"><div id="card">
         <code id="code">tl.to()</code></div></div>`;
       const at = (id: string) => document.getElementById(id)!;
-      const restore = emulateHitTest(() => [at("code"), at("card"), at("root")]);
-      const api = (window as any).__HF_PICKER_API;
-      try {
-        expect(api.getCandidatesAtPoint(10, 10).map((c: any) => c.selector)).toEqual([
-          "#code",
-          "#card",
-        ]);
-      } finally {
-        restore();
-      }
+      expect(candidatesUnder(() => [at("code"), at("card"), at("root")])).toEqual([
+        "#code",
+        "#card",
+      ]);
     });
 
     it("adopts the override only for the hit test, leaving the DOM and a saved outerHTML untouched", () => {
@@ -279,16 +283,10 @@ describe("createPickerModule", () => {
           style="pointer-events: none"><div data-hf-inner-root="true"><h1 id="t">Hi</h1></div></div></div>`;
       const at = (id: string) => document.getElementById(id)!;
       const inner = document.querySelector("[data-hf-inner-root]")!;
-      const restore = emulateHitTest(() => [at("t"), inner, at("ovl"), at("aroll"), at("root")]);
-      const api = (window as any).__HF_PICKER_API;
-      try {
-        expect(api.getCandidatesAtPoint(10, 10).map((c: any) => c.selector)).toEqual([
-          "#aroll",
-          "#root",
-        ]);
-      } finally {
-        restore();
-      }
+      expect(candidatesUnder(() => [at("t"), inner, at("ovl"), at("aroll"), at("root")])).toEqual([
+        "#aroll",
+        "#root",
+      ]);
     });
 
     it("a section background click picks the host, and an inner root never gets a bare tag selector", () => {
@@ -638,14 +636,20 @@ describe("createPickerModule", () => {
       }
     });
 
-    it("looks for a layer's text only in boxes near the pointer's row", () => {
+    // A glyph box under the pointer, in a box laid out far from it (moved by a transform): out of reach.
+    it.each([
+      ["a paragraph far below", { top: 800, bottom: 840, height: 40 }],
+      [
+        "a tall default-font box past the capped reach, about ten times its font",
+        { top: 400, bottom: 700, height: 300 },
+      ],
+    ])("does not look for a layer's text in %s", (_, box) => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"></div>
-        <div id="layer"><p id="far">Far words</p></div>`;
-      // A glyph box under the pointer, in a paragraph laid out far below it (moved by a transform).
-      at("far").getBoundingClientRect = () =>
-        ({ left: 0, top: 800, right: 400, bottom: 840, width: 400, height: 40 }) as DOMRect;
-      const unlay = layOut({ "Far words": [0, 0, 100, 40] });
+        <div id="layer"><div id="box"><p>Box words</p></div></div>`;
+      at("box").getBoundingClientRect = () =>
+        ({ left: 0, right: 600, width: 600, ...box }) as DOMRect;
+      const unlay = layOut({ "Box words": [0, 0, 100, 40] });
       const restore = emulateHitTest(() => [at("layer"), at("bg")]);
       try {
         expect(selectorsAt()).toEqual(["#bg"]);
@@ -668,23 +672,6 @@ describe("createPickerModule", () => {
       const restore = emulateHitTest(() => [at("para"), at("bg")]);
       try {
         expect(selectorsAt(300, 190)).toEqual(["#para", "#bg"]);
-      } finally {
-        restore();
-        unlay();
-      }
-    });
-
-    it("caps how far a tall box's lines reach, at about ten times its font", () => {
-      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
-      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
-        <div id="layer"><div id="tall"><p>Tall words</p></div></div>`;
-      // A 300px box of default-font text, 390px below the pointer: past the capped reach.
-      at("tall").getBoundingClientRect = () =>
-        ({ left: 0, top: 400, right: 600, bottom: 700, width: 600, height: 300 }) as DOMRect;
-      const unlay = layOut({ "Tall words": [0, 0, 100, 40] });
-      const restore = emulateHitTest(() => [at("layer"), at("bg")]);
-      try {
-        expect(selectorsAt()).toEqual(["#bg"]);
       } finally {
         restore();
         unlay();
