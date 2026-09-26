@@ -7,12 +7,18 @@ const PICTURES = new Set(["IMG", "VIDEO", "IFRAME", "EMBED", "OBJECT", "CANVAS"]
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SVG_BOXES = new Set(["svg", "g", "foreignObject"]);
 const SIDES = ["Top", "Right", "Bottom", "Left"] as const;
-// Ceiling: a candidate's first 200 shown text nodes decide; text past them counts as not drawn.
-const TEXT_BUDGET = 200;
 
 const paints = (style: CSSStyleDeclaration): boolean =>
   (Boolean(style.backgroundImage) && style.backgroundImage !== "none") ||
   !TRANSPARENT.test(style.backgroundColor);
+
+// Glyphs paint with the text fill colour (`color` unless set apart) or a text stroke.
+const glyphsPaint = (style: CSSStyleDeclaration): boolean => {
+  const fill = style.getPropertyValue("-webkit-text-fill-color") || style.color;
+  const stroke = Number.parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) || 0;
+  const strokeColor = style.getPropertyValue("-webkit-text-stroke-color") || style.color;
+  return !TRANSPARENT.test(fill) || (stroke > 0 && !TRANSPARENT.test(strokeColor));
+};
 
 const borderWidths = (style: CSSStyleDeclaration): number[] =>
   SIDES.map((side) =>
@@ -68,17 +74,18 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
   const layout = typeof doc.createRange().getClientRects === "function";
   const range = doc.createRange();
   const glyphsOf = new Map<Node, Rect[]>();
-  const shownElement = new Map<Element, boolean>();
+  const closedBox = new Map<Element, boolean>();
   const shownTextNode = new Map<Node, boolean>();
 
-  const shown = (el: Element): boolean => {
-    let known = shownElement.get(el);
+  // Hidden, or its own out-of-flow box: its text is not an ancestor's to draw.
+  const closed = (el: Element): boolean => {
+    let known = closedBox.get(el);
     if (known === undefined) {
       const s = view!.getComputedStyle(el);
       const faded =
         Number.parseFloat(s.opacity) <= 0.01 && !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR);
-      known = s.display !== "none" && !faded;
-      shownElement.set(el, known);
+      known = s.display === "none" || faded || s.position === "absolute" || s.position === "fixed";
+      closedBox.set(el, known);
     }
     return known;
   };
@@ -87,7 +94,7 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
     if (known === undefined) {
       const parent = node.parentElement;
       const s = parent && node.nodeValue?.trim() ? view!.getComputedStyle(parent) : null;
-      known = Boolean(s) && s!.visibility !== "hidden" && !TRANSPARENT.test(s!.color);
+      known = Boolean(s) && s!.visibility !== "hidden" && glyphsPaint(s!);
       shownTextNode.set(node, known);
     }
     return known;
@@ -109,17 +116,15 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
   function textAt(el: Element): boolean {
     const walker = doc.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
       acceptNode: (node) =>
-        node.nodeType === 1 && !shown(node as Element)
+        node.nodeType === 1 && (!node.hasChildNodes() || closed(node as Element))
           ? NodeFilter.FILTER_REJECT
           : NodeFilter.FILTER_ACCEPT,
     });
     const glyphs: Rect[] = [];
-    let examined = 0;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.nodeType !== 3 || !shownText(node)) continue;
       // No layout to ask (a DOM without rendering): shown text counts.
       if (!layout) return true;
-      if (++examined > TEXT_BUDGET) break;
       glyphs.push(...glyphsNear(node));
     }
     const lines = lineBoxes(glyphs);
@@ -141,11 +146,13 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
     const [top, right, bottom, left] = borderWidths(s) as [number, number, number, number];
     if (top || right || bottom || left) {
       const r = el.getBoundingClientRect();
+      const width = (el as HTMLElement).offsetWidth;
+      const k = width > 0 ? r.width / width : 1;
       const inner = {
-        left: r.left + left,
-        right: r.right - right,
-        top: r.top + top,
-        bottom: r.bottom - bottom,
+        left: r.left + left * k,
+        right: r.right - right * k,
+        top: r.top + top * k,
+        bottom: r.bottom - bottom * k,
       };
       if (!holds(inner, x, y)) return true;
     }
@@ -154,9 +161,10 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
 
   return (el) => {
     if (PICTURES.has(el.tagName)) return true;
-    if (el.namespaceURI === SVG_NS) return !SVG_BOXES.has(el.localName);
+    const box = el.namespaceURI !== SVG_NS || SVG_BOXES.has(el.localName);
+    if (!box) return true;
     if (!view) return true;
     const s = view.getComputedStyle(el);
-    return paints(s) || decoratedAt(el, s) || textAt(el);
+    return paints(s) || decoratedAt(el, s) || (el.namespaceURI !== SVG_NS && textAt(el));
   };
 }

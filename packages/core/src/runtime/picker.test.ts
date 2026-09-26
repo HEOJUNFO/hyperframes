@@ -502,6 +502,166 @@ describe("createPickerModule", () => {
       }
     });
 
+    // jsdom computes neither text strokes nor pseudo-elements: lay the named properties over its style.
+    // Keys are an element id, or an id and a pseudo-element ("icon::before").
+    function styled(byKey: Record<string, Record<string, string>>): () => void {
+      const real = window.getComputedStyle.bind(window);
+      const spy = vi.spyOn(window, "getComputedStyle").mockImplementation((el, which) => {
+        const style = real(el, which);
+        const props = byKey[`${(el as Element).id}${which ?? ""}`];
+        if (!props) return style;
+        const camel = (name: string) =>
+          name.replace(/^-/, "").replace(/-(\w)/g, (_, c) => c.toUpperCase());
+        const own = Object.fromEntries(Object.entries(props).map(([k, v]) => [camel(k), v]));
+        return new Proxy(style, {
+          get: (target, key) => {
+            if (key === "getPropertyValue")
+              return (name: string) => props[name] ?? target.getPropertyValue(name);
+            if (typeof key === "string" && key in own) return own[key];
+            const value = Reflect.get(target, key);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      });
+      return () => spy.mockRestore();
+    }
+
+    it("counts outline text and fill-coloured text though their `color` is transparent", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="outline" style="color: transparent">Outline</div>
+        <div id="filled" style="color: transparent">Filled</div>`;
+      const unstyle = styled({
+        outline: {
+          "-webkit-text-stroke-width": "2px",
+          "-webkit-text-stroke-color": "rgb(255, 0, 0)",
+        },
+        filled: { "-webkit-text-fill-color": "rgb(255, 0, 0)" },
+      });
+      let restore = emulateHitTest(() => [at("outline"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#outline", "#bg"]);
+      } finally {
+        restore();
+      }
+      restore = emulateHitTest(() => [at("filled"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#filled", "#bg"]);
+      } finally {
+        restore();
+        unstyle();
+      }
+    });
+
+    it("does not count a layer's out-of-flow boxes: their text is theirs, where they are", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><h1 id="title">Hi</h1></div>
+        <div id="captions"><p style="position: absolute">Caption words</p></div>`;
+      const restore = emulateHitTest(() => [at("captions"), at("title"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#title", "#bg"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("counts the gap between two words of a long split paragraph as the paragraph's", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      const words = Array.from({ length: 250 }, (_, i) => `<span>w${i}</span>`).join(" ");
+      document.body.innerHTML = `<div id="bg" style="${BG}"><p id="para">${words}</p></div>`;
+      const boxes: Record<string, [number, number, number, number]> = {};
+      for (let i = 0; i < 250; i += 1)
+        boxes[`w${i}`] = [40 + (i % 25) * 70, 100 + Math.floor(i / 25) * 60, 60, 40];
+      const unlay = layOut(boxes);
+      const restore = emulateHitTest(() => [at("para"), at("bg")]);
+      try {
+        // Between words 230 and 231, on the tenth line.
+        expect(selectorsAt(455, 660)).toEqual(["#para", "#bg"]);
+      } finally {
+        restore();
+        unlay();
+      }
+    });
+
+    it("scales a border's band with the element", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="frame" style="border: 4px solid rgb(0, 200, 120)"></div>`;
+      // Laid out 100px wide, drawn at half size.
+      Object.defineProperty(at("frame"), "offsetWidth", { value: 100 });
+      at("frame").getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 50, bottom: 50, width: 50, height: 50 }) as DOMRect;
+      const restore = emulateHitTest(() => [at("frame"), at("bg")]);
+      try {
+        expect(selectorsAt(3, 25)).toEqual(["#bg"]);
+        expect(selectorsAt(1, 25)).toEqual(["#frame", "#bg"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("counts an SVG that paints its own background", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <svg id="panel" style="background-color: rgb(20, 20, 20)"></svg>`;
+      const restore = emulateHitTest(() => [at("panel"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#panel", "#bg"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("counts an inset shadow, not an outer one: an outer shadow draws outside the box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="glow"></div><div id="well"></div>`;
+      const unstyle = styled({
+        glow: { "box-shadow": "rgb(255, 0, 0) 0px 0px 10px 0px" },
+        well: { "box-shadow": "rgb(255, 0, 0) 0px 0px 10px 0px inset" },
+      });
+      let restore = emulateHitTest(() => [at("glow"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+      } finally {
+        restore();
+      }
+      restore = emulateHitTest(() => [at("well"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#well", "#bg"]);
+      } finally {
+        restore();
+        unstyle();
+      }
+    });
+
+    it("counts pseudo content only when it is displayed and draws something", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="empty"></div><div id="hidden"></div><div id="icon"></div>`;
+      const unstyle = styled({
+        "empty::after": { content: '""', display: "block" },
+        "hidden::before": { content: '"*"', display: "none" },
+        "icon::before": { content: '"*"', display: "inline" },
+      });
+      try {
+        for (const [id, drawn] of [
+          ["empty", false],
+          ["hidden", false],
+          ["icon", true],
+        ] as const) {
+          const restore = emulateHitTest(() => [at(id), at("bg")]);
+          try {
+            expect(selectorsAt()).toEqual(drawn ? [`#${id}`, "#bg"] : ["#bg"]);
+          } finally {
+            restore();
+          }
+        }
+      } finally {
+        unstyle();
+      }
+    });
+
     it("picks a shown child of a hidden parent: visibility can be turned back on below", () => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"><div id="veil" style="visibility: hidden">
