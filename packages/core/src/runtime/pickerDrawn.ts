@@ -7,6 +7,7 @@ const PICTURES = new Set(["IMG", "VIDEO", "IFRAME", "EMBED", "OBJECT", "CANVAS"]
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SVG_BOXES = new Set(["svg", "g", "foreignObject"]);
 const SIDES = ["Top", "Right", "Bottom", "Left"] as const;
+const EVERYWHERE: Rect = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
 
 const paints = (style: CSSStyleDeclaration): boolean =>
   (Boolean(style.backgroundImage) && style.backgroundImage !== "none") ||
@@ -73,11 +74,11 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
   const view = doc.defaultView;
   const layout = typeof doc.createRange().getClientRects === "function";
   const range = doc.createRange();
-  const glyphsOf = new Map<Node, Rect[]>();
+  const glyphsIn = new Map<Element, Rect[]>();
   const closedBox = new Map<Element, boolean>();
   const shownTextNode = new Map<Node, boolean>();
 
-  // Hidden, or its own out-of-flow box: its text is not an ancestor's to draw.
+  // Hidden, its own out-of-flow box, or a box too far from the pointer's row for its text to reach it.
   const closed = (el: Element): boolean => {
     let known = closedBox.get(el);
     if (known === undefined) {
@@ -85,6 +86,11 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
       const faded =
         Number.parseFloat(s.opacity) <= 0.01 && !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR);
       known = s.display === "none" || faded || s.position === "absolute" || s.position === "fixed";
+      if (!known && layout) {
+        const r = el.getBoundingClientRect();
+        const reach = 3 * (Number.parseFloat(s.fontSize) || 16);
+        known = (r.width > 0 || r.height > 0) && (y < r.top - reach || y > r.bottom + reach);
+      }
       closedBox.set(el, known);
     }
     return known;
@@ -101,33 +107,34 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
   };
   // Only glyphs near the pointer's row can make a line or a leading that covers it.
   const glyphsNear = (node: Node): Rect[] => {
-    let glyphs = glyphsOf.get(node);
-    if (glyphs) return glyphs;
-    glyphs = [];
+    // No layout to ask (a DOM without rendering): shown text counts wherever the pointer is.
+    if (!layout) return [EVERYWHERE];
+    const glyphs: Rect[] = [];
     range.selectNodeContents(node);
     for (const r of range.getClientRects()) {
       const h = r.bottom - r.top;
       if (r.width > 0 && h > 0 && y >= r.top - 2 * h && y <= r.bottom + 2 * h) glyphs.push(r);
     }
-    glyphsOf.set(node, glyphs);
+    return glyphs;
+  };
+  // The glyphs of the text an element lays out itself, collected once per pick for every candidate.
+  const glyphsUnder = (el: Element): Rect[] => {
+    let glyphs = glyphsIn.get(el);
+    if (glyphs) return glyphs;
+    glyphs = [];
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) {
+        if (shownText(child)) glyphs.push(...glyphsNear(child));
+      } else if (child.nodeType === 1 && child.hasChildNodes() && !closed(child as Element)) {
+        glyphs.push(...glyphsUnder(child as Element));
+      }
+    }
+    glyphsIn.set(el, glyphs);
     return glyphs;
   };
 
   function textAt(el: Element): boolean {
-    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) =>
-        node.nodeType === 1 && (!node.hasChildNodes() || closed(node as Element))
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_ACCEPT,
-    });
-    const glyphs: Rect[] = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.nodeType !== 3 || !shownText(node)) continue;
-      // No layout to ask (a DOM without rendering): shown text counts.
-      if (!layout) return true;
-      glyphs.push(...glyphsNear(node));
-    }
-    const lines = lineBoxes(glyphs);
+    const lines = lineBoxes(glyphsUnder(el));
     return (
       lines.some((line) => holds(line, x, y)) || leadings(lines).some((gap) => holds(gap, x, y))
     );
@@ -146,13 +153,14 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
     const [top, right, bottom, left] = borderWidths(s) as [number, number, number, number];
     if (top || right || bottom || left) {
       const r = el.getBoundingClientRect();
-      const width = (el as HTMLElement).offsetWidth;
-      const k = width > 0 ? r.width / width : 1;
+      const { offsetWidth, offsetHeight } = el as HTMLElement;
+      const kx = offsetWidth > 0 ? r.width / offsetWidth : 1;
+      const ky = offsetHeight > 0 ? r.height / offsetHeight : 1;
       const inner = {
-        left: r.left + left * k,
-        right: r.right - right * k,
-        top: r.top + top * k,
-        bottom: r.bottom - bottom * k,
+        left: r.left + left * kx,
+        right: r.right - right * kx,
+        top: r.top + top * ky,
+        bottom: r.bottom - bottom * ky,
       };
       if (!holds(inner, x, y)) return true;
     }

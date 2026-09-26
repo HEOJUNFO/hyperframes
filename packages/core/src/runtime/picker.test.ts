@@ -556,8 +556,9 @@ describe("createPickerModule", () => {
     it("does not count a layer's out-of-flow boxes: their text is theirs, where they are", () => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"><h1 id="title">Hi</h1></div>
-        <div id="captions"><p style="position: absolute">Caption words</p></div>`;
-      const restore = emulateHitTest(() => [at("captions"), at("title"), at("bg")]);
+        <div id="captions"><p style="position: absolute">Caption words</p></div>
+        <div id="banner"><p style="position: fixed">Banner words</p></div>`;
+      const restore = emulateHitTest(() => [at("captions"), at("banner"), at("title"), at("bg")]);
       try {
         expect(selectorsAt()).toEqual(["#title", "#bg"]);
       } finally {
@@ -586,15 +587,29 @@ describe("createPickerModule", () => {
     it("scales a border's band with the element", () => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"></div>
-        <div id="frame" style="border: 4px solid rgb(0, 200, 120)"></div>`;
-      // Laid out 100px wide, drawn at half size.
-      Object.defineProperty(at("frame"), "offsetWidth", { value: 100 });
-      at("frame").getBoundingClientRect = () =>
-        ({ left: 0, top: 0, right: 50, bottom: 50, width: 50, height: 50 }) as DOMRect;
-      const restore = emulateHitTest(() => [at("frame"), at("bg")]);
+        <div id="wide" style="border: 4px solid rgb(0, 200, 120)"></div>
+        <div id="tall" style="border: 4px solid rgb(0, 200, 120)"></div>`;
+      // Laid out 100px square; drawn at half width, and at half height.
+      Object.defineProperty(at("wide"), "offsetWidth", { value: 100 });
+      Object.defineProperty(at("wide"), "offsetHeight", { value: 100 });
+      at("wide").getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 50, bottom: 100, width: 50, height: 100 }) as DOMRect;
+      Object.defineProperty(at("tall"), "offsetWidth", { value: 100 });
+      Object.defineProperty(at("tall"), "offsetHeight", { value: 100 });
+      at("tall").getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 100, bottom: 50, width: 100, height: 50 }) as DOMRect;
+      let restore = emulateHitTest(() => [at("wide"), at("bg")]);
       try {
-        expect(selectorsAt(3, 25)).toEqual(["#bg"]);
-        expect(selectorsAt(1, 25)).toEqual(["#frame", "#bg"]);
+        expect(selectorsAt(3, 50)).toEqual(["#bg"]);
+        expect(selectorsAt(1, 50)).toEqual(["#wide", "#bg"]);
+        expect(selectorsAt(25, 3)).toEqual(["#wide", "#bg"]);
+      } finally {
+        restore();
+      }
+      restore = emulateHitTest(() => [at("tall"), at("bg")]);
+      try {
+        expect(selectorsAt(50, 3)).toEqual(["#bg"]);
+        expect(selectorsAt(50, 1)).toEqual(["#tall", "#bg"]);
       } finally {
         restore();
       }
@@ -609,6 +624,34 @@ describe("createPickerModule", () => {
         expect(selectorsAt()).toEqual(["#panel", "#bg"]);
       } finally {
         restore();
+      }
+    });
+
+    it("counts an SVG's text through the text element, not the SVG box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div><svg id="art"><text>Label</text></svg>`;
+      const restore = emulateHitTest(() => [at("art"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("looks for a layer's text only in boxes near the pointer's row", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="layer"><p id="far">Far words</p></div>`;
+      // A glyph box under the pointer, in a paragraph laid out far below it (moved by a transform).
+      at("far").getBoundingClientRect = () =>
+        ({ left: 0, top: 800, right: 400, bottom: 840, width: 400, height: 40 }) as DOMRect;
+      const unlay = layOut({ "Far words": [0, 0, 100, 40] });
+      const restore = emulateHitTest(() => [at("layer"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+      } finally {
+        restore();
+        unlay();
       }
     });
 
