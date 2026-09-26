@@ -1023,6 +1023,28 @@ describe("initSandboxRuntimeModular", () => {
     expect(timeline.time()).toBe(0);
   });
 
+  it("renders the requested instant, not the 30fps grid, for an exact renderSeek", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
+    root.setAttribute("data-duration", "20");
+    root.setAttribute("data-fps", "29.97");
+    root.setAttribute("data-width", "1920");
+    root.setAttribute("data-height", "1080");
+    document.body.appendChild(root);
+
+    const timeline = createMockTimeline(20);
+    window.__timelines = { main: timeline };
+
+    initSandboxRuntimeModular();
+
+    // `snapshot --at 19.019018` on a 29.97fps project: the 30fps grid floors it to 19.0.
+    window.__player?.renderSeek(19.019018, { exact: true });
+
+    expect(timeline.time()).toBe(19.019018);
+  });
+
   it("uses live child timeline duration when a composition host has no authored duration", () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");

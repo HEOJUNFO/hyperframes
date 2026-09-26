@@ -44,7 +44,7 @@ import {
 import { handleErrorForProxy, handleMetadataForProxy, maybeProxyProactively } from "./mediaProxy";
 import { probeAndCacheElementVolume, type VolumeKeyframe } from "./mediaVolumeEnvelope.js";
 import { createPickerModule } from "./picker";
-import { createRuntimePlayer, type RuntimePlayerTransport } from "./player";
+import { createRuntimePlayer, resolveRenderSeekTime, type RuntimePlayerTransport } from "./player";
 import { createRuntimeState } from "./state";
 import {
   collectRuntimeTimelinePayload,
@@ -97,7 +97,7 @@ import {
   isMemberGroupHidden,
 } from "../audioGroups";
 import { clampNativeMediaVolume } from "../audioGain";
-import { quantizeSeekTime, quantizeTimeToFrame } from "../inline-scripts/parityContract";
+import { quantizeTimeToFrame } from "../inline-scripts/parityContract";
 import { createManualEditGestureWatch } from "./manualEditGestureWatch";
 import type {
   HeldSeek,
@@ -3897,15 +3897,15 @@ export function initSandboxRuntimeModular(): void {
     renderSeek: (timeSeconds, options) => {
       heldSeek = null;
       renderCaptureSeekStarted = true;
-      const quantized = quantizeSeekTime(
+      const seekTime = resolveRenderSeekTime(
         Math.max(0, Number(timeSeconds) || 0),
         state.canonicalFps,
-        options?.subFrameDivisions,
+        options,
       );
       webAudio.stopAll();
       clock.detachAudioSource();
       if (clock.isPlaying()) clock.pause();
-      clock.seek(quantized);
+      clock.seek(seekTime);
       state.currentTime = clock.now();
       state.isPlaying = false;
       state.mediaForceSyncNextTick = true;
