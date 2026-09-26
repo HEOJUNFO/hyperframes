@@ -1,7 +1,15 @@
 // fallow-ignore-file code-duplication
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerMediaRoutes } from "./media";
@@ -116,6 +124,34 @@ describe("registerMediaRoutes", () => {
 
     expect(response.status).toBe(501);
   });
+
+  // Windows needs a privilege to create symlinks.
+  it.skipIf(process.platform === "win32")(
+    "writes background-removal output to the folder it checked, though a link on its path is retargeted",
+    async () => {
+      const outside = mkdtempSync(join(tmpdir(), "hf-media-outside-"));
+      tempProjectDirs.push(outside);
+      let dir = "";
+      const { app, projectDir } = createAdapter((opts) => {
+        rmSync(join(dir, "cutouts"));
+        symlinkSync(outside, join(dir, "cutouts"), "dir");
+        writeFileSync(opts.outputPath, "cutout");
+        return completeJob(opts);
+      });
+      dir = projectDir;
+      mkdirSync(join(projectDir, "real"));
+      symlinkSync(join(projectDir, "real"), join(projectDir, "cutouts"), "dir");
+
+      await app.request("http://localhost/projects/demo/media/remove-background", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ inputPath: "assets/photo.jpg", outputPath: "cutouts/photo.png" }),
+      });
+
+      expect(readdirSync(outside)).toEqual([]);
+      expect(readFileSync(join(projectDir, "real", "photo.png"), "utf-8")).toBe("cutout");
+    },
+  );
 
   it("rejects remote input paths", async () => {
     const { app, startBackgroundRemoval } = createAdapter(completeJob);

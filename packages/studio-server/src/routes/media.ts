@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import type { MediaProcessingJobState, StudioApiAdapter } from "../types.js";
-import { resolveWithinProject } from "../helpers/safePath.js";
+import { pinWithinProject, resolveWithinProject } from "../helpers/safePath.js";
 import { probeMediaMetadata } from "../helpers/mediaMetadata.js";
 
 const VIDEO_EXTENSIONS = new Set([
@@ -181,7 +181,7 @@ export function registerMediaRoutes(
       const outputAssetPath = requestedOutput
         ? uniqueAssetPath(project.dir, requestedOutput)
         : defaultOutputPath(project.dir, inputAssetPath);
-      const outputPath = resolveWithinProject(project.dir, outputAssetPath);
+      const outputPath = pinWithinProject(project.dir, outputAssetPath);
       if (!outputPath) return c.json({ error: "forbidden" }, 403);
       if (inputIsVideo && !VIDEO_OUTPUT_EXTENSIONS.has(extname(outputAssetPath).toLowerCase())) {
         return c.json({ error: "video background removal output must be .webm or .mov" }, 400);
@@ -198,7 +198,7 @@ export function registerMediaRoutes(
         }
         backgroundOutputAssetPath = defaultPlatePath(project.dir, inputAssetPath);
         backgroundOutputPath =
-          resolveWithinProject(project.dir, backgroundOutputAssetPath) ?? undefined;
+          pinWithinProject(project.dir, backgroundOutputAssetPath) ?? undefined;
         if (!backgroundOutputPath) {
           return c.json({ error: "forbidden" }, 403);
         }
