@@ -2,6 +2,7 @@ import type { RuntimeJson, RuntimeOutboundMessage, RuntimePickerElementInfo } fr
 import { COLOR_GRADING_SOURCE_HIDDEN_ATTR } from "../colorGrading";
 import { swallow } from "./diagnostics";
 import { isElementNode } from "./domRealm";
+import { drawsAt } from "./pickerDrawn";
 
 type PickerModuleDeps = {
   postMessage: (payload: RuntimeOutboundMessage) => void;
@@ -130,9 +131,11 @@ export function createPickerModule(deps: PickerModuleDeps): PickerModule {
     const win = el.ownerDocument.defaultView;
     if (!win) return false;
     let current: HTMLElement | null = el;
+    // Visibility inherits and a child may turn it back on, so only the element's own counts.
+    if (win.getComputedStyle(el).visibility === "hidden") return true;
     while (current && current !== document.body && current !== document.documentElement) {
       const computed = win.getComputedStyle(current);
-      if (computed.display === "none" || computed.visibility === "hidden") return true;
+      if (computed.display === "none") return true;
       if (computed.pointerEvents === "none") return true;
       const opacity = Number.parseFloat(computed.opacity);
       if (
@@ -222,15 +225,21 @@ export function createPickerModule(deps: PickerModuleDeps): PickerModule {
     if (blocksPickerAtPoint(raw[0] ?? null)) return [];
     const dedupe: Record<string, true> = {};
     const candidates: Element[] = [];
+    const drawn: Element[] = [];
     for (const [i, node] of raw.entries()) {
       if (!isPickableElement(node)) continue;
       const key = `${node.tagName}::${(node as HTMLElement).id || ""}::${i}`;
       if (dedupe[key]) continue;
       dedupe[key] = true;
       candidates.push(node);
-      if (candidates.length >= maxCandidates) break;
+      // Drawn: pixels of its own under the pointer, or it holds a drawn candidate (a title's card).
+      if (drawn.some((inner) => node.contains(inner)) || drawsAt(node, clientX, clientY)) {
+        drawn.push(node);
+        if (drawn.length >= maxCandidates) break;
+      }
     }
-    return candidates;
+    // Nothing drawn here (a section's empty area): what is under the pointer, as before.
+    return drawn.length > 0 ? drawn : candidates.slice(0, maxCandidates);
   }
 
   function extractElementInfo(el: Element): RuntimePickerElementInfo {

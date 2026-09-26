@@ -353,6 +353,95 @@ describe("createPickerModule", () => {
     });
   });
 
+  describe("picks what is drawn under the pointer", () => {
+    const selectorsAt = (x = 10, y = 10) =>
+      (window as any).__HF_PICKER_API.getCandidatesAtPoint(x, y).map((c: any) => c.selector);
+    const at = (id: string) => document.getElementById(id)!;
+    const BG = "background: rgb(245, 238, 220)";
+
+    it("finds a painted background under eight see-through layers", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      const layers = Array.from({ length: 8 }, (_, i) => `l${i}`);
+      const nested = layers.reduceRight((inner, id) => `<div id="${id}">${inner}</div>`, "");
+      document.body.innerHTML = `<div id="bg" style="${BG}">${nested}</div>`;
+      const restore = emulateHitTest(() => [...[...layers].reverse().map(at), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+        expect((window as any).__HF_PICKER_API.pickAtPoint(10, 10)?.selector).toBe("#bg");
+      } finally {
+        restore();
+      }
+    });
+
+    it("keeps a title and every box holding it, so a same-spot click still climbs", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="card"><h1 id="title">Hi</h1></div><div id="mask"></div>`;
+      const restore = emulateHitTest(() => [at("mask"), at("title"), at("card")]);
+      try {
+        expect(selectorsAt()).toEqual(["#title", "#card"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("drops a line whose words have not faded in and the see-through layer over it", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="scene" style="${BG}"><div id="mask"><div id="line">
+        <span id="w1" style="opacity: 0">Imagine</span> <span id="w2" style="opacity: 0">you</span>
+        </div></div></div>`;
+      const restore = emulateHitTest(() => [at("w1"), at("line"), at("mask"), at("scene")]);
+      try {
+        expect(selectorsAt()).toEqual(["#scene"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("counts text across its line boxes, and not the rest of its box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><p id="para">One line<br>Two line</p></div>`;
+      // jsdom lays nothing out: each line gets the glyph box Chromium would measure.
+      const glyphs: Record<string, number[]> = {
+        "One line": [100, 100, 400, 46],
+        "Two line": [100, 220, 380, 46],
+      };
+      const proto = Range.prototype as any;
+      const select = proto.selectNodeContents;
+      const placed = new WeakMap<Range, Node>();
+      proto.selectNodeContents = function (this: Range, node: Node) {
+        placed.set(this, node);
+      };
+      proto.getClientRects = function (this: Range) {
+        const box = glyphs[placed.get(this)?.nodeValue ?? ""];
+        if (!box) return [];
+        const [left, top, width, height] = box as [number, number, number, number];
+        return [{ left, top, width, height, right: left + width, bottom: top + height }];
+      };
+      const restore = emulateHitTest(() => [at("para"), at("bg")]);
+      try {
+        expect(selectorsAt(300, 120)).toEqual(["#para", "#bg"]);
+        expect(selectorsAt(300, 183)).toEqual(["#para", "#bg"]);
+        expect(selectorsAt(300, 600)).toEqual(["#bg"]);
+      } finally {
+        restore();
+        proto.selectNodeContents = select;
+        delete proto.getClientRects;
+      }
+    });
+
+    it("picks a shown child of a hidden parent: visibility can be turned back on below", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><div id="veil" style="visibility: hidden">
+        <b id="back" style="visibility: visible">Back</b></div></div>`;
+      const restore = emulateHitTest(() => [at("back"), at("veil"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#back", "#bg"]);
+      } finally {
+        restore();
+      }
+    });
+  });
+
   describe("escape key handler", () => {
     it("disables pick mode and posts cancel message on Escape", () => {
       const postMessage = createMockPostMessage();
