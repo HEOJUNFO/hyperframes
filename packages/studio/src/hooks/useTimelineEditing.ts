@@ -21,7 +21,7 @@ import {
   readFileContent,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
-import { animationEndFor } from "./timelineEditingGsap";
+import { animationEndFor, captureLiveLength } from "./timelineEditingGsap";
 import type { PersistTimelineEditInput } from "./timelineEditingHelpers";
 import { useSetAudioGroupAttribute } from "./timelineAudioGroupVolume";
 import { useSetElementAttribute } from "./timelineElementFxAttribute";
@@ -187,6 +187,7 @@ export function useTimelineEditing({
         // other move — early-returning on !startChanged alone silently dropped
         // the file write, so the lane snapped back on reload.
         const trackChanged = updates.track !== element.track;
+        const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
 
         if (startChanged || trackChanged) {
           const liveAttrs: Array<[string, string]> = [];
@@ -215,8 +216,7 @@ export function useTimelineEditing({
         const rollbackDuration = captureDurationRollback(previewIframeRef.current);
         // needsExtension gates the SDK path (setTiming can't grow the root duration), so read the store BEFORE the readout sync below optimistically updates it.
         const needsExtension = extendRootDurationIfNeeded(updates.start + element.duration);
-        // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
-        syncPreviewContentDuration(previewIframeRef.current);
+        syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
         const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
 
         const buildMovePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
@@ -318,14 +318,14 @@ export function useTimelineEditing({
         const liveAttr = playbackStartAttributeForElement(element);
         liveAttrs.push([liveAttr, formatTimelineAttributeNumber(updates.playbackStart)]);
       }
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       patchIframeDomTiming(previewIframeRef.current, element, liveAttrs, activeCompPath);
       // Snapshot the duration BEFORE the optimistic updates below so a failed
       // persist can roll the readout + live root back (see captureDurationRollback).
       const rollbackDuration = captureDurationRollback(previewIframeRef.current);
       // needsExtension gates the SDK path (setTiming can't grow the root duration), so read the store BEFORE the readout sync below optimistically updates it.
       const needsExtension = extendRootDurationIfNeeded(updates.start + updates.duration);
-      // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
       const targetPath = element.sourceFile || activeCompPath || "index.html";
       const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
       const buildResizePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {

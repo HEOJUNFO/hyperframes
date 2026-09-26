@@ -2,6 +2,7 @@ import { AUDIO_EXT, IMAGE_EXT, VIDEO_EXT } from "./mediaTypes";
 import { roundToCenti } from "./rounding";
 import { COMPOSITION_ROOT_OPEN_TAG_RE } from "./compositionPatterns";
 import { patchRootCompositionDuration, readRootCompositionDuration } from "./rootDuration";
+import { furthestClipEndFromSource } from "../player/lib/timelineElementHelpers";
 
 export const TIMELINE_ASSET_MIME = "application/x-hyperframes-asset";
 export const TIMELINE_BLOCK_MIME = "application/x-hyperframes-block";
@@ -162,6 +163,34 @@ export function setCompositionDurationToContent(source: string, contentEnd: numb
   const next = roundToCenti(contentEnd);
   if (rootDur === next) return source;
   return patchRootCompositionDuration(source, String(next));
+}
+
+/** A derived length follows content; a hand-set one only grows to a clip placed past it. */
+export function resolveRootLength(
+  rootLength: number | null,
+  contentEndBefore: number,
+  clipsEndAfter: number,
+  animationEndAfter: number,
+): number {
+  const derived =
+    rootLength == null ||
+    !Number.isFinite(rootLength) ||
+    roundToCenti(rootLength) === roundToCenti(contentEndBefore);
+  if (derived) return Math.max(clipsEndAfter, animationEndAfter);
+  return Math.max(rootLength, clipsEndAfter);
+}
+
+export function rootLengthAfterEdit(
+  original: string,
+  edited: string,
+  animationEnd: number,
+): number {
+  return resolveRootLength(
+    readRootCompositionDuration(original),
+    Math.max(furthestClipEndFromSource(original), animationEnd),
+    furthestClipEndFromSource(edited),
+    animationEnd,
+  );
 }
 
 export function insertTimelineAssetIntoSource(source: string, assetHtml: string): string {

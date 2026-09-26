@@ -11,13 +11,10 @@ import {
   type TimelineStackingReorderIntent,
 } from "../player/components/timelineEditing";
 import { getElementZIndex } from "../player/lib/layerOrdering";
-import {
-  furthestClipEndFromSource,
-  getTimelineElementIdentity,
-} from "../player/lib/timelineElementHelpers";
+import { getTimelineElementIdentity } from "../player/lib/timelineElementHelpers";
 import { saveProjectFilesWithHistory, type RecordEditInput } from "../utils/studioFileHistory";
 import type { TimelineZIndexReorderCommit } from "./useTimelineEditingTypes";
-import { setCompositionDurationToContent } from "../utils/timelineAssetDrop";
+import { rootLengthAfterEdit, setCompositionDurationToContent } from "../utils/timelineAssetDrop";
 import { readFileContent } from "./timelineTimingSync";
 import {
   findElementForSelection,
@@ -251,15 +248,11 @@ export function buildTimelineMoveTimingPatch(
       value: formatTimelineAttributeNumber(track),
     });
   }
-  // Content-driven duration: sync data-duration to the furthest clip end read
-  // from the PATCHED SOURCE (raw data-duration), so it grows if a clip moved
-  // past the end and shrinks if the furthest clip moved left. Measured from the
-  // source, NOT the store — store durations are runtime-truncated to the current
-  // comp length, which would ratchet the duration down every move. Never shorter
-  // than the live animations (animationEnd), so a move cannot cut them off.
+  // Clip ends come from the SOURCE (raw data-duration), NOT the store — store
+  // durations are runtime-truncated, which would ratchet the length down every move.
   return setCompositionDurationToContent(
     patched,
-    Math.max(furthestClipEndFromSource(patched), animationEnd),
+    rootLengthAfterEdit(original, patched, animationEnd),
   );
 }
 
@@ -288,12 +281,9 @@ export function buildTimelineResizeTimingPatch(
       value: formatTimelineAttributeNumber(pbs.value),
     });
   }
-  // Content-driven duration from the PATCHED SOURCE (raw data-duration) —
-  // grows/shrinks to the furthest clip end. Not from the store, whose
-  // durations are runtime-truncated. Never shorter than the live animations.
   return setCompositionDurationToContent(
     patched,
-    Math.max(furthestClipEndFromSource(patched), animationEnd),
+    rootLengthAfterEdit(original, patched, animationEnd),
   );
 }
 

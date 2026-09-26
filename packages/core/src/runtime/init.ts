@@ -75,6 +75,7 @@ import type {
   RuntimeDeterministicAdapter,
   RuntimeJson,
   RuntimeSeekOptions,
+  RuntimeTimelineChildLike,
   RuntimeTimelineLike,
 } from "./types";
 import type { PlayerAPI } from "../core.types";
@@ -1019,10 +1020,11 @@ export function initSandboxRuntimeModular(): void {
   // media windows already use — makes data-duration optional wherever the
   // runtime can figure the duration out on its own, instead of hard-failing
   // capture with "Composition has zero duration".
-  const resolveAdapterDurationFloorSeconds = (): number | null => {
+  const resolveAdapterDurationFloorSeconds = (oneCycle = false): number | null => {
     let maxSeconds = 0;
     for (const adapter of state.deterministicAdapters) {
-      const getter = adapter.getInferredDurationSeconds;
+      const getter =
+        (oneCycle && adapter.getAnimationCycleEndSeconds) || adapter.getInferredDurationSeconds;
       if (typeof getter !== "function") continue;
       let inferred: number | null = null;
       try {
@@ -1269,8 +1271,11 @@ export function initSandboxRuntimeModular(): void {
     return safeDuration > 0 ? Math.max(0, safeDuration) : 0;
   };
 
-  // The length each padded root timeline had before the runtime extended it to the declared length.
-  const rootTimelinePads = new WeakMap<RuntimeTimelineLike, { at: number; before: number }>();
+  // Tweens the runtime adds to stretch a timeline to the declared length; never animation.
+  const runtimeFillerTweens = new WeakSet<object>();
+  const markRuntimeFiller = (tween: unknown): void => {
+    if (tween && typeof tween === "object") runtimeFillerTweens.add(tween);
+  };
 
   const resolveRootTimelineFromDocument = (): TimelineResolution => {
     const timelines = (window.__timelines ?? {}) as Record<string, RuntimeTimelineLike | undefined>;
@@ -1357,12 +1362,7 @@ export function initSandboxRuntimeModular(): void {
       };
       if (typeof withTween.to === "function") {
         try {
-          withTween.to({}, { duration: durationSeconds });
-          // The filler is padding: only the wrapped root timeline's own length is animation.
-          rootTimelinePads.set(fallbackTimeline, {
-            at: durationSeconds,
-            before: getTimelineDurationSeconds(existingRootTimeline) ?? 0,
-          });
+          markRuntimeFiller(withTween.to({}, { duration: durationSeconds }));
         } catch (err) {
           // no-op; if tween creation fails, caller will discard by unusable duration
           swallow("runtime.init.site3", err);
@@ -1617,15 +1617,9 @@ export function initSandboxRuntimeModular(): void {
           };
           if (typeof tlWithTo.to === "function") {
             try {
-              // A second pad sees the first in the timeline's length, so keep the first length.
-              const prior = rootTimelinePads.get(rootTimeline);
-              rootTimelinePads.set(rootTimeline, {
-                at: rootDurationFloorSeconds,
-                before: prior?.before ?? rootDurationSeconds,
-              });
               // Placing a zero-duration tween at the floor extends
               // timeline.duration() to exactly that point.
-              tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds);
+              markRuntimeFiller(tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds));
             } catch (err) {
               // keep runtime resilient
               swallow("runtime.init.site6", err);
@@ -2720,13 +2714,26 @@ export function initSandboxRuntimeModular(): void {
   };
   window.__hf.leasePausedMedia = leasePausedMedia;
   window.__hf.releasePausedMedia = releasePausedMedia;
+  // GSAP's duration() of a tween is one iteration; a timeline's duration() counts its children's repeats.
+  const readOneCycleEndSeconds = (children: RuntimeTimelineChildLike[]): number => {
+    let end = 0;
+    for (const child of children) {
+      if (runtimeFillerTweens.has(child)) continue;
+      const cycle = child.getChildren
+        ? readOneCycleEndSeconds(child.getChildren(false, true, true))
+        : Number(child.duration?.()) || 0;
+      // startTime() is in the parent's time, the cycle in the child's own.
+      const scale = Number((child as { timeScale?: () => number }).timeScale?.()) || 1;
+      end = Math.max(end, (Number(child.startTime?.()) || 0) + cycle / scale);
+    }
+    return end;
+  };
   window.__hf.animationEnd = () => {
     const timeline = state.capturedTimeline;
-    const live = getTimelineDurationSeconds(timeline) ?? 0;
-    const pad = timeline ? rootTimelinePads.get(timeline) : undefined;
-    // A timeline that grows after padding but stays under the pad still reads its pre-pad length.
-    const timelineEnd = pad && live <= pad.at ? pad.before : live;
-    const end = Math.max(timelineEnd, resolveAdapterDurationFloorSeconds() ?? 0);
+    const timelineEnd = timeline?.getChildren
+      ? readOneCycleEndSeconds(timeline.getChildren(false, true, true))
+      : (getTimelineDurationSeconds(timeline) ?? 0);
+    const end = Math.max(timelineEnd, resolveAdapterDurationFloorSeconds(true) ?? 0);
     return end > 0 && end < LOOP_INFLATED_TIMELINE_SECONDS ? end : null;
   };
   window.__hf.audioMeter = {

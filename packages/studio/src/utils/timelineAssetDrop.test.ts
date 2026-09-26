@@ -8,9 +8,37 @@ import {
   getTimelineAssetKind,
   insertTimelineAssetIntoSource,
   resolveTimelineAssetCompositionSize,
+  resolveRootLength,
   resolveTimelineAssetSrc,
   setCompositionDurationToContent,
 } from "./timelineAssetDrop";
+
+describe("resolveRootLength", () => {
+  it("moves a derived length to the new content end, both ways", () => {
+    expect(resolveRootLength(5, 5, 4, 0)).toBe(4);
+    expect(resolveRootLength(5, 5, 7, 0)).toBe(7);
+    expect(resolveRootLength(5, 5, 4, 6)).toBe(6);
+  });
+
+  it("compares at the writer's hundredths", () => {
+    expect(resolveRootLength(5, 5.004, 4, 0)).toBe(4);
+    expect(resolveRootLength(5, 5.01, 4, 0)).toBe(5);
+  });
+
+  it("treats a root without a readable length as derived", () => {
+    expect(resolveRootLength(null, 5, 4, 0)).toBe(4);
+    expect(resolveRootLength(Number.NaN, 5, 4, 0)).toBe(4);
+  });
+
+  it("keeps a hand-set length, even against a later animation", () => {
+    expect(resolveRootLength(8, 5, 4, 5)).toBe(8);
+    expect(resolveRootLength(3, 6, 3, 6)).toBe(3);
+  });
+
+  it("grows a hand-set length to a clip placed past it, never to an animation", () => {
+    expect(resolveRootLength(8, 5, 9, 12)).toBe(9);
+  });
+});
 
 describe("setCompositionDurationToContent", () => {
   const src = (dur: number) =>

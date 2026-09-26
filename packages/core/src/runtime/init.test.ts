@@ -5,7 +5,7 @@ import { initSandboxRuntimeModular } from "./init";
 import { collectRuntimeTimelinePayload } from "./timeline";
 import { TYPEGPU_PRESENT_HEARTBEAT_MS } from "./adapters/typegpu";
 import { WebAudioTransport } from "./webAudioTransport";
-import type { RuntimeTimelineLike } from "./types";
+import type { RuntimeTimelineChildLike, RuntimeTimelineLike } from "./types";
 import {
   registerRuntimeDataHandler,
   resetRuntimeDataForTests,
@@ -57,20 +57,62 @@ function createMockTimeline(duration: number): RuntimeTimelineLike {
   };
 }
 
-function createPaddableMockTimeline(duration: number): RuntimeTimelineLike {
-  const timeline = createMockTimeline(duration) as RuntimeTimelineLike & {
-    to: (_target: object, vars: { duration: number }, position?: number) => void;
+type MockTimelineChild = RuntimeTimelineChildLike & {
+  totalDuration: () => number;
+  timeScale: () => number;
+};
+
+// Mirrors GSAP: a tween's duration() is one iteration, its totalDuration() counts the repeats.
+function mockTween(start: number, duration: number, repeat = 0): MockTimelineChild {
+  return {
+    startTime: () => start,
+    duration: () => duration,
+    totalDuration: () => duration * (repeat + 1),
+    timeScale: () => 1,
   };
-  const baseDuration = timeline.duration;
-  let paddedDuration = baseDuration();
-  timeline.duration = () => paddedDuration;
+}
+
+// Mirrors GSAP: a timeline ends where its last child's repeats end, in the timeline's time.
+function endOfChildren(children: MockTimelineChild[]): number {
+  return Math.max(
+    0,
+    ...children.map((c) => (c.startTime?.() ?? 0) + c.totalDuration() / c.timeScale()),
+  );
+}
+
+function mockNestedTimeline(
+  start: number,
+  timeScale: number,
+  children: MockTimelineChild[],
+): MockTimelineChild {
+  const duration = endOfChildren(children);
+  return {
+    startTime: () => start,
+    duration: () => duration,
+    totalDuration: () => duration,
+    timeScale: () => timeScale,
+    getChildren: () => children,
+  };
+}
+
+function createMockTimelineOf(children: MockTimelineChild[]): RuntimeTimelineLike {
+  return { ...createMockTimeline(endOfChildren(children)), getChildren: () => children };
+}
+
+function createPaddableMockTimeline(duration: number): RuntimeTimelineLike {
+  const children = duration > 0 ? [mockTween(0, duration)] : [];
+  const timeline = createMockTimelineOf(children) as RuntimeTimelineLike & {
+    to: (_target: object, vars: { duration: number }, position?: number) => MockTimelineChild;
+  };
+  timeline.duration = () => endOfChildren(children);
   // Mirrors GSAP: an omitted position appends sequentially at the current end.
   timeline.to = (_target, vars, position) => {
-    const resolvedPosition = position ?? paddedDuration;
-    paddedDuration = Math.max(
-      paddedDuration,
-      resolvedPosition + Math.max(0, Number(vars.duration) || 0),
+    const tween = mockTween(
+      position ?? endOfChildren(children),
+      Math.max(0, Number(vars.duration) || 0),
     );
+    children.push(tween);
+    return tween;
   };
   return timeline;
 }
@@ -1417,7 +1459,7 @@ describe("initSandboxRuntimeModular", () => {
     it("counts an animation adapter that runs past the root timeline", () => {
       mountRoot("3");
       window.__hfLottie = [{ goToAndStop: () => {}, totalFrames: 600, frameRate: 30 }] as never;
-      window.__timelines = { main: createMockTimeline(2) };
+      window.__timelines = { main: createMockTimelineOf([mockTween(0, 2)]) };
       try {
         initSandboxRuntimeModular();
         expect(window.__hf?.animationEnd?.()).toBeCloseTo(20, 3);
@@ -1428,7 +1470,7 @@ describe("initSandboxRuntimeModular", () => {
 
     it("reports an animation that runs past the declared length", () => {
       mountRoot("3");
-      window.__timelines = { main: createMockTimeline(5) };
+      window.__timelines = { main: createMockTimelineOf([mockTween(0, 5)]) };
       initSandboxRuntimeModular();
 
       expect(window.__hf?.animationEnd?.()).toBe(5);
@@ -1436,10 +1478,60 @@ describe("initSandboxRuntimeModular", () => {
 
     it("reports no end for a loop-inflated timeline", () => {
       mountRoot("3");
-      window.__timelines = { main: createMockTimeline(100_000) };
+      window.__timelines = { main: createMockTimelineOf([mockTween(0, 100_000)]) };
       initSandboxRuntimeModular();
 
       expect(window.__hf?.animationEnd?.()).toBeNull();
+    });
+
+    it("counts one cycle of a repeating tween, not its repeats", () => {
+      mountRoot("10");
+      const timeline = createMockTimelineOf([mockTween(0.5, 1, 40)]);
+      window.__timelines = { main: timeline };
+      initSandboxRuntimeModular();
+
+      expect(timeline.duration()).toBe(41.5);
+      expect(window.__hf?.animationEnd?.()).toBe(1.5);
+    });
+
+    it("counts one cycle of a repeating tween inside a nested, time-scaled timeline", () => {
+      mountRoot("10");
+      const timeline = createMockTimelineOf([
+        mockTween(0, 0.5),
+        mockNestedTimeline(2, 2, [mockTween(0, 1, 40)]),
+      ]);
+      window.__timelines = { main: timeline };
+      initSandboxRuntimeModular();
+
+      expect(timeline.duration()).toBe(22.5);
+      expect(window.__hf?.animationEnd?.()).toBe(2.5);
+    });
+
+    it("counts one iteration of a repeating WAAPI animation", () => {
+      mountRoot("10");
+      const doc = document as Document & { getAnimations?: () => unknown[] };
+      doc.getAnimations = () => [
+        {
+          currentTime: 0,
+          pause: () => {},
+          addEventListener: () => {},
+          effect: {
+            getComputedTiming: () => ({
+              delay: 0,
+              duration: 1000,
+              iterations: 40,
+              endTime: 40_000,
+            }),
+          },
+        },
+      ];
+      window.__timelines = { main: createMockTimelineOf([mockTween(0, 0.5)]) };
+      try {
+        initSandboxRuntimeModular();
+        expect(window.__hf?.animationEnd?.()).toBe(1);
+      } finally {
+        delete doc.getAnimations;
+      }
     });
   });
 

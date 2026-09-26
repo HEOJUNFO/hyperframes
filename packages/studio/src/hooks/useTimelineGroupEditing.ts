@@ -27,7 +27,7 @@ import {
   shiftGsapPositions,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
-import { isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
+import { captureLiveLength, isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -251,6 +251,7 @@ export function useTimelineGroupEditing({
   const handleTimelineGroupMove = useCallback(
     (changes: TimelineGroupMoveChange[], options?: TimelineGroupCommitOptions) => {
       if (changes.length === 0) return Promise.resolve();
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       for (const change of changes) {
         const attrs: Array<[string, string]> = [
           ["data-start", formatTimelineAttributeNumber(change.start)],
@@ -286,9 +287,7 @@ export function useTimelineGroupEditing({
       // readout sync below are provable no-ops there — kept unconditional so the
       // duration machinery stays on one code path.
       const needsExtension = extendRootDurationIfNeeded(maxEnd);
-      // Optimistic duration readout: content-driven (grow AND shrink), read from
-      // the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
       const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? moveCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;
@@ -382,6 +381,7 @@ export function useTimelineGroupEditing({
   const handleTimelineGroupResize = useCallback(
     (changes: TimelineGroupResizeChange[], options?: TimelineGroupCommitOptions) => {
       if (changes.length === 0) return Promise.resolve();
+      const lengthAfterEdit = captureLiveLength(previewIframeRef.current);
       for (const change of changes) {
         const liveAttrs: Array<[string, string]> = [
           ["data-start", formatTimelineAttributeNumber(change.start)],
@@ -401,9 +401,7 @@ export function useTimelineGroupEditing({
       // needsExtension gates the SDK path (setTiming can't grow the root duration),
       // so read the store BEFORE the readout sync below optimistically updates it.
       const needsExtension = extendRootDurationIfNeeded(maxEnd);
-      // Optimistic duration readout: content-driven (grow AND shrink), read from
-      // the just-patched live DOM. See syncPreviewContentDuration.
-      syncPreviewContentDuration(previewIframeRef.current);
+      syncPreviewContentDuration(previewIframeRef.current, lengthAfterEdit());
       const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? resizeCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;

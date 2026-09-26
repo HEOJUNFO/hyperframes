@@ -1568,6 +1568,135 @@ describe("useTimelineEditing duration rollback on failed persist", () => {
     });
   });
 
+  describe("a length set by hand", () => {
+    const lengthSource = (length: number, start: number) =>
+      [
+        `<div data-composition-id="main" data-duration="${length}">`,
+        `  <div id="clip" data-start="${start}" data-duration="2" data-track-index="0"></div>`,
+        `</div>`,
+      ].join("\n");
+
+    async function expectLength(
+      setup: { length: number; start: number; animationEnd: number },
+      edit: (hook: ReturnType<typeof renderTimelineEditingHook>, clip: TimelineElement) => unknown,
+      expected: string,
+    ): Promise<void> {
+      const source = lengthSource(setup.length, setup.start);
+      const iframe = createRootedIframe(source);
+      (iframe.contentWindow as unknown as { __hf: unknown }).__hf = {
+        animationEnd: () => setup.animationEnd,
+      };
+      const clip = timelineElement({ id: "clip", track: 0, zIndex: 0, start: setup.start });
+      const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+      stubProjectFetch(source);
+      usePlayerStore.getState().setDuration(setup.length);
+      const hook = renderTimelineEditingHook({
+        timelineElements: [clip],
+        iframe,
+        onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+        projectId: "p1",
+        writeProjectFile,
+        recordEdit: vi.fn(async () => {}),
+        reloadPreview: vi.fn(),
+      });
+
+      await act(async () => {
+        await edit(hook, clip);
+        await flushAsyncWork();
+      });
+
+      expect(rootDurationAttr(iframe)).toBe(expected);
+      expect(usePlayerStore.getState().duration).toBe(Number(expected));
+      expect(writeProjectFile).toHaveBeenCalledTimes(1);
+      expect(String(writeProjectFile.mock.calls[0]![1])).toContain(
+        `data-composition-id="main" data-duration="${expected}"`,
+      );
+      hook.unmount();
+    }
+
+    const handSet = { length: 8, start: 3, animationEnd: 5 };
+
+    it("is kept on move", () =>
+      expectLength(handSet, (hook, clip) => hook.move(clip, { start: 2, track: 0 }), "8"));
+
+    it("is kept on resize", () =>
+      expectLength(
+        handSet,
+        (hook, clip) => hook.resize(clip, { start: 3, duration: 1, playbackStart: undefined }),
+        "8",
+      ));
+
+    it("is kept on group move", () =>
+      expectLength(handSet, (hook, clip) => hook.groupMove([{ element: clip, start: 2 }]), "8"));
+
+    it("is kept on group resize", () =>
+      expectLength(
+        handSet,
+        (hook, clip) => hook.groupResize([{ element: clip, start: 3, duration: 1 }]),
+        "8",
+      ));
+
+    it("is not grown by a later animation", () =>
+      expectLength(
+        { length: 3, start: 1, animationEnd: 6 },
+        (hook, clip) => hook.move(clip, { start: 0.5, track: 0 }),
+        "3",
+      ));
+
+    it("grows to a clip dragged past it, not to the animation end", async () => {
+      const past = { length: 8, start: 3, animationEnd: 12 };
+      await expectLength(past, (hook, clip) => hook.move(clip, { start: 7, track: 0 }), "9");
+      await expectLength(past, (hook, clip) => hook.groupMove([{ element: clip, start: 7 }]), "9");
+    });
+
+    it("while a derived length still shrinks with its content", () =>
+      expectLength(
+        { length: 5, start: 3, animationEnd: 0 },
+        (hook, clip) => hook.move(clip, { start: 2, track: 0 }),
+        "4",
+      ));
+
+    it("is kept on delete", async () => {
+      const source = lengthSource(8, 3);
+      const removed = source.replace(
+        /\n.*id="clip".*/,
+        `\n  <div id="head" data-start="0" data-duration="1" data-track-index="0"></div>`,
+      );
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: Parameters<typeof fetch>[0]) =>
+          requestUrl(input).includes("/remove-element/")
+            ? jsonResponse({ changed: true, content: removed })
+            : jsonResponse({ content: source }),
+        ),
+      );
+      const iframe = createRootedIframe(source);
+      const clip = timelineElement({ id: "clip", track: 0, zIndex: 0, start: 3 });
+      const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+      usePlayerStore.getState().setDuration(8);
+      const hook = renderTimelineEditingHook({
+        timelineElements: [clip],
+        iframe,
+        onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+        projectId: "p1",
+        writeProjectFile,
+        recordEdit: vi.fn(async () => {}),
+        reloadPreview: vi.fn(),
+      });
+
+      await act(async () => {
+        await hook.del(clip);
+        await flushAsyncWork();
+      });
+
+      expect(usePlayerStore.getState().duration).toBe(8);
+      expect(String(writeProjectFile.mock.calls[0]![1])).toContain(
+        'data-composition-id="main" data-duration="8"',
+      );
+      hook.unmount();
+    });
+  });
+
   it("keeps the grown duration when the persist succeeds", async () => {
     const { iframe, clip, hook } = setupFailedPersist();
     // Same harness, but with a write that succeeds this time.
