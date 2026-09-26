@@ -11,6 +11,10 @@ import {
   resetRuntimeDataForTests,
   setRuntimeData,
 } from "./runtimeData";
+import gsap from "gsap";
+
+// Importing gsap installs it on window; a test opts in by setting window.gsap itself.
+delete window.gsap;
 
 it("schedules WebAudio element gain from author volume without bridge volume", () => {
   const source = readFileSync("src/runtime/init.ts", "utf8");
@@ -63,12 +67,13 @@ type MockTimelineChild = RuntimeTimelineChildLike & {
 };
 
 // Mirrors GSAP: a tween's duration() is one iteration, its totalDuration() counts the repeats.
-function mockTween(start: number, duration: number, repeat = 0): MockTimelineChild {
+function mockTween(start: number, duration: number, repeat = 0, data?: unknown): MockTimelineChild {
   return {
     startTime: () => start,
     duration: () => duration,
     totalDuration: () => duration * (repeat + 1),
     timeScale: () => 1,
+    data,
   };
 }
 
@@ -102,17 +107,24 @@ function createMockTimelineOf(children: MockTimelineChild[]): RuntimeTimelineLik
 function createPaddableMockTimeline(duration: number): RuntimeTimelineLike {
   const children = duration > 0 ? [mockTween(0, duration)] : [];
   const timeline = createMockTimelineOf(children) as RuntimeTimelineLike & {
-    to: (_target: object, vars: { duration: number }, position?: number) => MockTimelineChild;
+    to: (
+      _target: object,
+      vars: { duration: number; data?: unknown },
+      position?: number,
+    ) => RuntimeTimelineLike;
   };
   timeline.duration = () => endOfChildren(children);
-  // Mirrors GSAP: an omitted position appends sequentially at the current end.
+  // Mirrors GSAP: an omitted position appends at the current end, and to() returns the timeline.
   timeline.to = (_target, vars, position) => {
-    const tween = mockTween(
-      position ?? endOfChildren(children),
-      Math.max(0, Number(vars.duration) || 0),
+    children.push(
+      mockTween(
+        position ?? endOfChildren(children),
+        Math.max(0, Number(vars.duration) || 0),
+        0,
+        vars.data,
+      ),
     );
-    children.push(tween);
-    return tween;
+    return timeline;
   };
   return timeline;
 }
@@ -1532,6 +1544,75 @@ describe("initSandboxRuntimeModular", () => {
       } finally {
         delete doc.getAnimations;
       }
+    });
+
+    describe("under real GSAP", () => {
+      const paused = () => gsap.timeline({ paused: true });
+      const initWithRoot = (declared: string, root: ReturnType<typeof paused>) => {
+        mountRoot(declared);
+        window.gsap = gsap as unknown as typeof window.gsap;
+        window.__timelines = { main: root as unknown as RuntimeTimelineLike };
+        initSandboxRuntimeModular();
+      };
+
+      it("skips the filler that pads a short timeline to the declared length", () => {
+        const root = paused().to({ x: 0 }, { x: 1, duration: 4 }, 0);
+        initWithRoot("10", root);
+
+        expect(root.duration()).toBe(10);
+        expect(window.__hf?.animationEnd?.()).toBe(4);
+      });
+
+      it("reports no animation for an empty timeline the runtime fills", () => {
+        initWithRoot("10", paused());
+
+        expect(window.__player?.getDuration()).toBe(10);
+        expect(window.__hf?.animationEnd?.()).toBeNull();
+      });
+
+      it("counts one cycle of a repeating tween", () => {
+        const root = paused().to({ x: 0 }, { x: 1, duration: 1, repeat: 40 }, 0.5);
+        initWithRoot("10", root);
+
+        expect(root.duration()).toBe(41.5);
+        expect(window.__hf?.animationEnd?.()).toBe(1.5);
+      });
+
+      it("counts a nested timeline's cycle in its parent's time", () => {
+        const nested = gsap.timeline().to({ x: 0 }, { x: 1, duration: 1, repeat: 40 }).timeScale(2);
+        const root = paused().to({ x: 0 }, { x: 1, duration: 0.5 }, 0).add(nested, 2);
+        initWithRoot("10", root);
+
+        expect(window.__hf?.animationEnd?.()).toBe(2.5);
+      });
+
+      it("counts a reversed tween forwards", () => {
+        const reversed = gsap.to({ x: 0 }, { x: 1, duration: 2 }).reverse();
+        const root = paused().add(reversed, 1);
+        initWithRoot("20", root);
+
+        expect(reversed.timeScale()).toBe(-1);
+        expect(window.__hf?.animationEnd?.()).toBe(3);
+      });
+
+      it("caps an auto-nested sub-composition at its host clip's end", () => {
+        mountRoot("9");
+        const host = document.createElement("div");
+        host.setAttribute("data-composition-id", "scene");
+        host.setAttribute("data-start", "1");
+        host.setAttribute("data-duration", "3");
+        host.classList.add("clip");
+        document.querySelector("[data-root]")!.appendChild(host);
+        // Authored scene timelines are commonly padded to their full length.
+        const scene = paused().to({ x: 0 }, { x: 1, duration: 2 }, 0).to({}, { duration: 8 }, 0);
+        const root = paused().to({ x: 0 }, { x: 1, duration: 1 }, 0);
+        window.gsap = gsap as unknown as typeof window.gsap;
+        window.__timelines = { main: root, scene } as never;
+        initSandboxRuntimeModular();
+
+        expect(root.duration()).toBe(9);
+        expect(window.__hf?.animationEnd?.()).toBe(4);
+      });
     });
   });
 

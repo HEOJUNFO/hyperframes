@@ -9,11 +9,11 @@ import {
   type PublishSdkSession,
 } from "../utils/sdkCutover";
 import {
-  buildTimelineMoveTimingPatch,
-  buildTimelineResizeTimingPatch,
   extendRootDurationIfNeeded,
   formatTimelineAttributeNumber,
   patchIframeDomTiming,
+  patchTimelineMoveTiming,
+  patchTimelineResizeTiming,
   playbackStartAttributeForElement,
   persistTimelineBatchEdit,
   type PersistTimelineBatchChange,
@@ -27,7 +27,7 @@ import {
   shiftGsapPositions,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
-import { captureLiveLength, isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
+import { captureLiveLength, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -78,15 +78,6 @@ interface UseTimelineGroupEditingOptions {
 
 function targetPathFor(element: TimelineElement, activeCompPath: string | null): string {
   return element.sourceFile || activeCompPath || "index.html";
-}
-
-/** The live animation end belongs to the previewed composition's file only. */
-function previewedAnimationEnd(
-  element: TimelineElement,
-  activeCompPath: string | null,
-  animationEnd: number,
-): number {
-  return isPreviewedFile(targetPathFor(element, activeCompPath), activeCompPath) ? animationEnd : 0;
 }
 
 function allChangesSharePath(
@@ -167,6 +158,7 @@ export function useTimelineGroupEditing({
       projectId: string,
       label: string,
       batchChanges: PersistTimelineBatchChange[],
+      animationEnd: number,
       coalesceKey: string,
       coalesceMs?: number,
     ) => {
@@ -180,6 +172,7 @@ export function useTimelineGroupEditing({
         pendingTimelineEditPathRef,
         coalesceKey,
         coalesceMs,
+        animationEnd,
       });
       forceReloadSdkSession?.();
     },
@@ -310,15 +303,15 @@ export function useTimelineGroupEditing({
             changes.map((change) => ({
               element: change.element,
               buildPatches: (original, target) =>
-                buildTimelineMoveTimingPatch(
+                patchTimelineMoveTiming(
                   original,
                   target,
                   change.start,
                   change.element.duration,
                   change.track,
-                  previewedAnimationEnd(change.element, activeCompPath, animationEnd),
                 ),
             })),
+            animationEnd,
             coalesceKey,
             coalesceMs,
           );
@@ -426,18 +419,13 @@ export function useTimelineGroupEditing({
             changes.map((change) => ({
               element: change.element,
               buildPatches: (original, target) =>
-                buildTimelineResizeTimingPatch(
-                  original,
-                  target,
-                  change.element,
-                  {
-                    start: change.start,
-                    duration: change.duration,
-                    playbackStart: change.playbackStart,
-                  },
-                  previewedAnimationEnd(change.element, activeCompPath, animationEnd),
-                ),
+                patchTimelineResizeTiming(original, target, change.element, {
+                  start: change.start,
+                  duration: change.duration,
+                  playbackStart: change.playbackStart,
+                }),
             })),
+            animationEnd,
             coalesceKey,
             coalesceMs,
           );

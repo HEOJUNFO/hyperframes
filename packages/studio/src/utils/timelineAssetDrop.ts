@@ -1,8 +1,17 @@
 import { AUDIO_EXT, IMAGE_EXT, VIDEO_EXT } from "./mediaTypes";
 import { roundToCenti } from "./rounding";
 import { COMPOSITION_ROOT_OPEN_TAG_RE } from "./compositionPatterns";
-import { patchRootCompositionDuration, readRootCompositionDuration } from "./rootDuration";
-import { furthestClipEndFromSource } from "../player/lib/timelineElementHelpers";
+import {
+  patchRootCompositionDuration,
+  patchRootDerivedDuration,
+  readRootCompositionDuration,
+  readRootLength,
+  type RootLength,
+} from "./rootDuration";
+import {
+  furthestClipEndFromDocument,
+  furthestClipEndFromSource,
+} from "../player/lib/timelineElementHelpers";
 
 export const TIMELINE_ASSET_MIME = "application/x-hyperframes-asset";
 export const TIMELINE_BLOCK_MIME = "application/x-hyperframes-block";
@@ -165,32 +174,63 @@ export function setCompositionDurationToContent(source: string, contentEnd: numb
   return patchRootCompositionDuration(source, String(next));
 }
 
-/** A derived length follows content; a hand-set one only grows to a clip placed past it. */
+/** The furthest clip end and the live animation end of one file. */
+export interface ContentEnd {
+  clips: number;
+  animation: number;
+}
+
+/**
+ * Derived when the length matches its marker (with no marker, the pre-edit content end).
+ * Derived follows content; hand-set grows only to a clip the edit newly places past it.
+ */
 export function resolveRootLength(
-  rootLength: number | null,
-  contentEndBefore: number,
-  clipsEndAfter: number,
-  animationEndAfter: number,
-): number {
-  const derived =
-    rootLength == null ||
-    !Number.isFinite(rootLength) ||
-    roundToCenti(rootLength) === roundToCenti(contentEndBefore);
-  if (derived) return Math.max(clipsEndAfter, animationEndAfter);
-  return Math.max(rootLength, clipsEndAfter);
+  root: { length: number | null; marker: number | null },
+  before: ContentEnd,
+  after: ContentEnd,
+): RootLength {
+  const { length, marker } = root;
+  const reference =
+    marker != null && Number.isFinite(marker) ? marker : Math.max(before.clips, before.animation);
+  if (
+    length == null ||
+    !Number.isFinite(length) ||
+    roundToCenti(length) === roundToCenti(reference)
+  ) {
+    const end = Math.max(after.clips, after.animation);
+    return { length: end, marker: end };
+  }
+  const clipsEnd = roundToCenti(after.clips);
+  if (clipsEnd > roundToCenti(length) && clipsEnd > roundToCenti(before.clips)) {
+    // The old length as the marker never matches the grown one, so it stays hand-set.
+    return { length: after.clips, marker: length };
+  }
+  return { length, marker: null };
 }
 
 export function rootLengthAfterEdit(
   original: string,
   edited: string,
   animationEnd: number,
-): number {
+): RootLength {
+  const doc = new DOMParser().parseFromString(original, "text/html");
   return resolveRootLength(
-    readRootCompositionDuration(original),
-    Math.max(furthestClipEndFromSource(original), animationEnd),
-    furthestClipEndFromSource(edited),
-    animationEnd,
+    readRootLength(doc),
+    { clips: furthestClipEndFromDocument(doc), animation: animationEnd },
+    { clips: furthestClipEndFromSource(edited), animation: animationEnd },
   );
+}
+
+export function writeRootLength(source: string, { length, marker }: RootLength): string {
+  if (marker == null || !(length > 0)) return source;
+  const sized = setCompositionDurationToContent(source, length);
+  return patchRootDerivedDuration(sized, String(roundToCenti(marker)));
+}
+
+/** One length decision for a whole edit of `original`; an unchanged file keeps its length. */
+export function syncRootLength(original: string, edited: string, animationEnd: number): string {
+  if (edited === original) return edited;
+  return writeRootLength(edited, rootLengthAfterEdit(original, edited, animationEnd));
 }
 
 export function insertTimelineAssetIntoSource(source: string, assetHtml: string): string {

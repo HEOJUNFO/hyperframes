@@ -1,23 +1,20 @@
 import { formatTimelineAttributeNumber } from "../player/components/timelineEditing";
 import type { IframeWindow } from "../player/lib/playbackTypes";
 import { furthestClipEndFromDocument } from "../player/lib/timelineElementHelpers";
-import { resolveRootLength } from "../utils/timelineAssetDrop";
-
-function documentRoot(doc: Document | null | undefined): Element | null {
-  const nodes = Array.from(doc?.querySelectorAll("[data-composition-id]") ?? []);
-  return (
-    nodes.find((node) => !node.parentElement?.closest("[data-composition-id]")) ?? nodes[0] ?? null
-  );
-}
+import { DERIVED_DURATION_ATTR, readRootLength, type RootLength } from "../utils/rootDuration";
+import { resolveRootLength, type ContentEnd } from "../utils/timelineAssetDrop";
 
 export function patchDocumentRootDuration(
   doc: Document | null | undefined,
   contentEnd: number,
+  marker: number | null = null,
 ): boolean {
   if (!doc || !Number.isFinite(contentEnd) || contentEnd <= 0) return false;
-  const root = documentRoot(doc);
+  const root = doc.querySelector("[data-composition-id]");
   if (!root) return false;
   root.setAttribute("data-duration", formatTimelineAttributeNumber(contentEnd));
+  if (marker == null) root.removeAttribute(DERIVED_DURATION_ATTR);
+  else root.setAttribute(DERIVED_DURATION_ATTR, formatTimelineAttributeNumber(marker));
   return true;
 }
 
@@ -43,14 +40,15 @@ export function animationEndFor(
   return isPreviewedFile(path, activeCompPath) ? readLiveAnimationEnd(iframe) : 0;
 }
 
-export function captureLiveLength(iframe: HTMLIFrameElement | null): () => number {
-  const raw = documentRoot(iframe?.contentDocument)?.getAttribute("data-duration");
-  const rootLength = raw == null ? null : Number.parseFloat(raw);
-  const contentEnd = Math.max(liveClipsEnd(iframe), readLiveAnimationEnd(iframe));
-  return () =>
-    resolveRootLength(rootLength, contentEnd, liveClipsEnd(iframe), readLiveAnimationEnd(iframe));
+export function captureLiveLength(iframe: HTMLIFrameElement | null): () => RootLength {
+  const root = readRootLength(iframe?.contentDocument);
+  const before = liveContentEnd(iframe);
+  return () => resolveRootLength(root, before, liveContentEnd(iframe));
 }
 
-function liveClipsEnd(iframe: HTMLIFrameElement | null): number {
-  return furthestClipEndFromDocument(iframe?.contentDocument);
+function liveContentEnd(iframe: HTMLIFrameElement | null): ContentEnd {
+  return {
+    clips: furthestClipEndFromDocument(iframe?.contentDocument),
+    animation: readLiveAnimationEnd(iframe),
+  };
 }

@@ -6,6 +6,7 @@ import { type TimelineElement, usePlayerStore } from "../player/store/playerStor
 import { applySoftReload, applySoftReloadFinalization } from "../utils/gsapSoftReload";
 import type { RecordEditInput } from "../utils/studioFileHistory";
 import { patchDocumentRootDuration } from "./timelineEditingGsap";
+import { readRootLength, type RootLength } from "../utils/rootDuration";
 import { studioWriteHeaders } from "../utils/studioFileVersion";
 
 class GsapPreviewConvergenceError extends Error {}
@@ -74,29 +75,29 @@ async function rollbackOwnedMutation(
 }
 
 /** Best-effort live-iframe wrapper for patchDocumentRootDuration (see timelineEditingGsap). */
-function patchIframeRootDuration(iframe: HTMLIFrameElement | null, contentEnd: number): void {
+function patchIframeRootDuration(iframe: HTMLIFrameElement | null, root: RootLength): void {
   try {
-    patchDocumentRootDuration(iframe?.contentDocument ?? null, contentEnd);
+    patchDocumentRootDuration(iframe?.contentDocument ?? null, root.length, root.marker);
   } catch {
     // Cross-origin or mid-navigation — file save is enqueued; iframe patch is best-effort.
   }
 }
 
 /** Keep the duration readout and live root aligned with optimistically patched clips. */
-export function syncPreviewContentDuration(iframe: HTMLIFrameElement | null, end: number): void {
-  if (end > 0) {
-    usePlayerStore.getState().setDuration(end);
-    patchIframeRootDuration(iframe, end);
-  }
+export function syncPreviewContentDuration(iframe: HTMLIFrameElement | null, next: RootLength) {
+  if (!(next.length > 0)) return;
+  usePlayerStore.getState().setDuration(next.length);
+  if (next.marker != null) patchIframeRootDuration(iframe, next);
 }
 
 /** Restore both store and live-root duration when a timing persist fails. */
 export function captureDurationRollback(iframe: HTMLIFrameElement | null): () => void {
   const previousDuration = usePlayerStore.getState().duration;
+  const previousMarker = readRootLength(iframe?.contentDocument).marker;
   return () => {
     if (usePlayerStore.getState().duration === previousDuration) return;
     usePlayerStore.getState().setDuration(previousDuration);
-    patchIframeRootDuration(iframe, previousDuration);
+    patchIframeRootDuration(iframe, { length: previousDuration, marker: previousMarker });
   };
 }
 

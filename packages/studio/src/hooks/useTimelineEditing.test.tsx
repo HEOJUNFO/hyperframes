@@ -1697,6 +1697,189 @@ describe("useTimelineEditing duration rollback on failed persist", () => {
     });
   });
 
+  describe("a derived length carries a marker", () => {
+    type Clip = { id: string; start: number; duration: number };
+    type Hook = ReturnType<typeof renderTimelineEditingHook>;
+    const rootSource = (root: string, clips: Clip[]) =>
+      [
+        `<div data-composition-id="main" ${root}>`,
+        ...clips.map(
+          (clip) =>
+            `  <div id="${clip.id}" data-start="${clip.start}" data-duration="${clip.duration}" data-track-index="0"></div>`,
+        ),
+        `</div>`,
+      ].join("\n");
+    const moveTo =
+      (start: number) =>
+      (hook: Hook, [clip]: TimelineElement[]) =>
+        hook.move(clip!, { start, track: 0 });
+
+    async function editLength(
+      source: string,
+      clips: Clip[],
+      edit: (hook: Hook, elements: TimelineElement[]) => unknown,
+      { animationEnd = 0, removed }: { animationEnd?: number; removed?: string } = {},
+    ) {
+      const iframe = createRootedIframe(source);
+      (iframe.contentWindow as unknown as { __hf: unknown }).__hf = {
+        animationEnd: () => animationEnd,
+      };
+      const elements = clips.map((clip) => timelineElement({ ...clip, track: 0, zIndex: 0 }));
+      const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+      if (removed === undefined) stubProjectFetch(source);
+      else {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: Parameters<typeof fetch>[0]) =>
+            requestUrl(input).includes("/remove-element/")
+              ? jsonResponse({ changed: true, content: removed })
+              : jsonResponse({ content: source }),
+          ),
+        );
+      }
+      usePlayerStore.getState().setDuration(Number(/data-duration="([^"]+)"/.exec(source)![1]));
+      const hook = renderTimelineEditingHook({
+        timelineElements: elements,
+        iframe,
+        onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+        projectId: "p1",
+        writeProjectFile,
+        recordEdit: vi.fn(async () => {}),
+        reloadPreview: vi.fn(),
+      });
+      await act(async () => {
+        await edit(hook, elements);
+        await flushAsyncWork();
+      });
+      hook.unmount();
+      return {
+        file: String(writeProjectFile.mock.calls[0]![1]),
+        live: iframe.contentDocument?.querySelector("[data-composition-id]"),
+        duration: usePlayerStore.getState().duration,
+      };
+    }
+
+    it("follows content by its marker after the animation end moved", async () => {
+      const clips = [{ id: "clip", start: 1, duration: 2 }];
+      const source = rootSource(`data-duration="5" data-hf-derived-duration="5"`, clips);
+      const { file, live, duration } = await editLength(source, clips, moveTo(0.5), {
+        animationEnd: 3,
+      });
+      expect(file).toContain(`data-duration="3" data-hf-derived-duration="3"`);
+      expect(live?.getAttribute("data-duration")).toBe("3");
+      expect(live?.getAttribute("data-hf-derived-duration")).toBe("3");
+      expect(duration).toBe(3);
+    });
+
+    it("keeps a length edited away from its marker, even when it equals the content end", async () => {
+      const clips = [{ id: "clip", start: 6, duration: 2 }];
+      const source = rootSource(`data-duration="8" data-hf-derived-duration="5"`, clips);
+      const { file, live, duration } = await editLength(source, clips, moveTo(5));
+      expect(file).toContain(`data-duration="8" data-hf-derived-duration="5"`);
+      expect(live?.getAttribute("data-duration")).toBe("8");
+      expect(duration).toBe(8);
+    });
+
+    it("is written with every derived write, to the file and the live root", async () => {
+      const clips = [{ id: "clip", start: 3, duration: 2 }];
+      const source = rootSource(`data-duration="5"`, clips);
+      const edits: Array<(hook: Hook, elements: TimelineElement[]) => unknown> = [
+        moveTo(2),
+        (hook, [clip]) => hook.resize(clip!, { start: 3, duration: 1, playbackStart: undefined }),
+        (hook, [clip]) => hook.groupMove([{ element: clip!, start: 2 }]),
+        (hook, [clip]) => hook.groupResize([{ element: clip!, start: 3, duration: 1 }]),
+      ];
+      for (const edit of edits) {
+        const { file, live } = await editLength(source, clips, edit);
+        expect(file).toContain(`data-duration="4" data-hf-derived-duration="4"`);
+        expect(live?.getAttribute("data-hf-derived-duration")).toBe("4");
+      }
+    });
+
+    it("without a marker, is derived only when the length equals the content end", async () => {
+      const clips = [{ id: "clip", start: 3, duration: 2 }];
+      const derived = await editLength(rootSource(`data-duration="5"`, clips), clips, moveTo(2));
+      expect(derived.file).toContain(`data-duration="4"`);
+      expect(derived.duration).toBe(4);
+      const handSet = await editLength(rootSource(`data-duration="8"`, clips), clips, moveTo(2));
+      expect(handSet.file).toContain(`data-duration="8">`);
+      expect(handSet.duration).toBe(8);
+    });
+
+    it("is decided once per file in a group move, whatever the order", async () => {
+      const clips = [
+        { id: "a", start: 3, duration: 2 },
+        { id: "b", start: 7, duration: 2 },
+      ];
+      const source = rootSource(`data-duration="8"`, clips);
+      // Both back by 2, and a swap that leaves the furthest end where it was.
+      for (const starts of [
+        [1, 5],
+        [7, 5],
+      ]) {
+        for (const order of [
+          [0, 1],
+          [1, 0],
+        ]) {
+          const { file, duration } = await editLength(source, clips, (hook, elements) =>
+            hook.groupMove(order.map((i) => ({ element: elements[i]!, start: starts[i]! }))),
+          );
+          expect(file).toContain(`data-duration="8">`);
+          expect(duration).toBe(8);
+        }
+      }
+    });
+
+    it("does not grow a hand-set length for a clip that already ran past it", async () => {
+      const clips = [
+        { id: "a", start: 3, duration: 2 },
+        { id: "b", start: 7, duration: 2 },
+      ];
+      const { file, live, duration } = await editLength(
+        rootSource(`data-duration="8"`, clips),
+        clips,
+        moveTo(2),
+      );
+      expect(file).toContain(`data-duration="8">`);
+      expect(live?.getAttribute("data-duration")).toBe("8");
+      expect(duration).toBe(8);
+    });
+
+    it("grows a hand-set length to a clip newly dragged past it, and a move back keeps it", async () => {
+      const clip = { id: "clip", start: 3, duration: 2 };
+      const grown = await editLength(rootSource(`data-duration="8"`, [clip]), [clip], moveTo(7));
+      expect(grown.file).toContain(`data-duration="9" data-hf-derived-duration="8"`);
+      expect(grown.live?.getAttribute("data-hf-derived-duration")).toBe("8");
+      expect(grown.duration).toBe(9);
+      const back = await editLength(grown.file, [{ ...clip, start: 7 }], moveTo(3));
+      expect(back.file).toContain(`data-duration="9" data-hf-derived-duration="8"`);
+      expect(back.duration).toBe(9);
+    });
+
+    it("on delete, follows content when derived and keeps a length set by hand", async () => {
+      const head = `  <div id="head" data-start="0" data-duration="1" data-track-index="0"></div>`;
+      const deleteClip = (root: string, clip: Clip) => {
+        const source = rootSource(root, [clip]);
+        const removed = source.replace(/\n.*id="clip".*/, `\n${head}`);
+        return editLength(source, [clip], (hook, [element]) => hook.del(element!), { removed });
+      };
+      const derived = await deleteClip(`data-duration="5" data-hf-derived-duration="5"`, {
+        id: "clip",
+        start: 1,
+        duration: 2,
+      });
+      expect(derived.file).toContain(`data-duration="1" data-hf-derived-duration="1"`);
+      expect(derived.duration).toBe(1);
+      const handSet = await deleteClip(`data-duration="8" data-hf-derived-duration="5"`, {
+        id: "clip",
+        start: 6,
+        duration: 2,
+      });
+      expect(handSet.file).toContain(`data-duration="8" data-hf-derived-duration="5"`);
+      expect(handSet.duration).toBe(8);
+    });
+  });
+
   it("keeps the grown duration when the persist succeeds", async () => {
     const { iframe, clip, hook } = setupFailedPersist();
     // Same harness, but with a write that succeeds this time.

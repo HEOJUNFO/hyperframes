@@ -10,8 +10,8 @@ import { studioWriteHeaders } from "../utils/studioFileVersion";
 import { getTimelineElementLabel } from "../utils/studioHelpers";
 import { buildPatchTarget, removeIframeTimelineElements } from "./timelineEditingHelpers";
 import { captureDurationRollback, readFileContent } from "./timelineTimingSync";
-import { isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
-import { rootLengthAfterEdit, setCompositionDurationToContent } from "../utils/timelineAssetDrop";
+import { animationEndFor, isPreviewedFile } from "./timelineEditingGsap";
+import { rootLengthAfterEdit, writeRootLength } from "../utils/timelineAssetDrop";
 import {
   resolveMainTrackDeleteRippleShifts,
   resolveShiftedElements,
@@ -100,7 +100,7 @@ export function useTimelineDeleteOps({
         (candidate) => (candidate.sourceFile || activeCompPath || "index.html") === targetPath,
       );
       const isRootFile = isPreviewedFile(targetPath, activeCompPath);
-      const animationEnd = isRootFile ? readLiveAnimationEnd(previewIframeRef.current) : 0;
+      const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
       try {
         const originalContent = await readFileContent(pid, targetPath);
 
@@ -136,15 +136,13 @@ export function useTimelineDeleteOps({
           };
           if (typeof removeData.content === "string") removedContent = removeData.content;
         }
-        // A derived length shrinks to the remaining content, read from the SOURCE (raw
-        // data-duration), not the store, whose durations are runtime-truncated.
-        const deleteContentEnd = rootLengthAfterEdit(originalContent, removedContent, animationEnd);
-        const patchedContent = setCompositionDurationToContent(removedContent, deleteContentEnd);
+        const nextLength = rootLengthAfterEdit(originalContent, removedContent, animationEnd);
+        const patchedContent = writeRootLength(removedContent, nextLength);
         // Optimistically reflect the shrunk length in the readout/seek bar,
         // rolling it back if the persist below fails (see captureDurationRollback).
         const rollbackDuration = captureDurationRollback(previewIframeRef.current);
-        if (deleteContentEnd > 0 && isRootFile) {
-          usePlayerStore.getState().setDuration(deleteContentEnd);
+        if (nextLength.length > 0 && isRootFile) {
+          usePlayerStore.getState().setDuration(nextLength.length);
         }
 
         // Shared with the ripple move below so a folded ripple is one undo

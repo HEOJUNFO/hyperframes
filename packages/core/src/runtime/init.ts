@@ -207,6 +207,8 @@ function createSettledTracker(
 }
 
 const SLOW_IDLE_HEARTBEAT_MS = 1000;
+// GSAP `data` on the tweens the runtime adds to stretch a timeline; never animation.
+const RUNTIME_FILLER = "hf-runtime-filler";
 
 export function initSandboxRuntimeModular(): void {
   const state = createRuntimeState();
@@ -1271,11 +1273,8 @@ export function initSandboxRuntimeModular(): void {
     return safeDuration > 0 ? Math.max(0, safeDuration) : 0;
   };
 
-  // Tweens the runtime adds to stretch a timeline to the declared length; never animation.
-  const runtimeFillerTweens = new WeakSet<object>();
-  const markRuntimeFiller = (tween: unknown): void => {
-    if (tween && typeof tween === "object") runtimeFillerTweens.add(tween);
-  };
+  // Sub-composition timelines the runtime nested into the root, by host composition id.
+  const autoNestedHostIds = new WeakMap<object, string>();
 
   const resolveRootTimelineFromDocument = (): TimelineResolution => {
     const timelines = (window.__timelines ?? {}) as Record<string, RuntimeTimelineLike | undefined>;
@@ -1323,6 +1322,13 @@ export function initSandboxRuntimeModular(): void {
       if (!node) return 0;
       return startResolver.resolveStartForElement(node, 0);
     };
+    const nestAtHostStart = (
+      parent: RuntimeTimelineLike,
+      candidate: { compositionId: string; timeline: RuntimeTimelineLike },
+    ): void => {
+      parent.add(candidate.timeline, resolveCompositionStartSeconds(candidate.compositionId));
+      autoNestedHostIds.set(candidate.timeline, candidate.compositionId);
+    };
     const createCompositeTimelineFromCandidates = (
       candidates: Array<{
         compositionId: string;
@@ -1333,12 +1339,7 @@ export function initSandboxRuntimeModular(): void {
       const gsapApi = window.gsap;
       if (!gsapApi || typeof gsapApi.timeline !== "function") return null;
       const compositeTimeline = gsapApi.timeline({ paused: true }) as RuntimeTimelineLike;
-      for (const candidate of candidates) {
-        compositeTimeline.add(
-          candidate.timeline,
-          resolveCompositionStartSeconds(candidate.compositionId),
-        );
-      }
+      for (const candidate of candidates) nestAtHostStart(compositeTimeline, candidate);
       return compositeTimeline;
     };
     const createDurationFloorTimeline = (
@@ -1358,11 +1359,11 @@ export function initSandboxRuntimeModular(): void {
         }
       }
       const withTween = fallbackTimeline as RuntimeTimelineLike & {
-        to?: (target: object, vars: { duration?: number }) => unknown;
+        to?: (target: object, vars: { duration?: number; data?: string }) => unknown;
       };
       if (typeof withTween.to === "function") {
         try {
-          markRuntimeFiller(withTween.to({}, { duration: durationSeconds }));
+          withTween.to({}, { duration: durationSeconds, data: RUNTIME_FILLER });
         } catch (err) {
           // no-op; if tween creation fails, caller will discard by unusable duration
           swallow("runtime.init.site3", err);
@@ -1405,8 +1406,7 @@ export function initSandboxRuntimeModular(): void {
           const alreadyIncluded = existingChildren.some((child) => child === candidate.timeline);
           if (alreadyIncluded) continue;
           try {
-            const startSec = resolveCompositionStartSeconds(candidate.compositionId);
-            rootTimeline.add(candidate.timeline, startSec);
+            nestAtHostStart(rootTimeline, candidate);
             addedIds.push(candidate.compositionId);
           } catch (err) {
             // ignore broken child add attempts
@@ -1613,13 +1613,17 @@ export function initSandboxRuntimeModular(): void {
           rootDurationFloorSeconds >= rootDurationSeconds + 0.5
         ) {
           const tlWithTo = rootTimeline as RuntimeTimelineLike & {
-            to?: (target: object, vars: { duration: number }, position: number) => unknown;
+            to?: (
+              target: object,
+              vars: { duration: number; data: string },
+              position: number,
+            ) => unknown;
           };
           if (typeof tlWithTo.to === "function") {
             try {
               // Placing a zero-duration tween at the floor extends
               // timeline.duration() to exactly that point.
-              markRuntimeFiller(tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds));
+              tlWithTo.to({}, { duration: 0, data: RUNTIME_FILLER }, rootDurationFloorSeconds);
             } catch (err) {
               // keep runtime resilient
               swallow("runtime.init.site6", err);
@@ -2714,17 +2718,27 @@ export function initSandboxRuntimeModular(): void {
   };
   window.__hf.leasePausedMedia = leasePausedMedia;
   window.__hf.releasePausedMedia = releasePausedMedia;
+  // A sub-composition is hidden after its host clip, so its animation counts only until then.
+  const autoNestedHostEndSeconds = (child: RuntimeTimelineChildLike): number => {
+    const hostId = autoNestedHostIds.get(child);
+    const host = hostId
+      ? document.querySelector(`[data-composition-id="${CSS.escape(hostId)}"]`)
+      : null;
+    const duration = host ? resolveDurationForElement(host) : null;
+    return host && duration ? resolveStartForElement(host, 0) + duration : Infinity;
+  };
   // GSAP's duration() of a tween is one iteration; a timeline's duration() counts its children's repeats.
   const readOneCycleEndSeconds = (children: RuntimeTimelineChildLike[]): number => {
     let end = 0;
     for (const child of children) {
-      if (runtimeFillerTweens.has(child)) continue;
+      if (child.data === RUNTIME_FILLER) continue;
       const cycle = child.getChildren
         ? readOneCycleEndSeconds(child.getChildren(false, true, true))
         : Number(child.duration?.()) || 0;
-      // startTime() is in the parent's time, the cycle in the child's own.
-      const scale = Number((child as { timeScale?: () => number }).timeScale?.()) || 1;
-      end = Math.max(end, (Number(child.startTime?.()) || 0) + cycle / scale);
+      // startTime() is in the parent's time, the cycle in the child's own; reversed reports -1.
+      const scale = Math.abs(Number((child as { timeScale?: () => number }).timeScale?.()) || 1);
+      const childEnd = (Number(child.startTime?.()) || 0) + cycle / scale;
+      end = Math.max(end, Math.min(childEnd, autoNestedHostEndSeconds(child)));
     }
     return end;
   };

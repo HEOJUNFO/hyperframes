@@ -14,7 +14,8 @@ import { getElementZIndex } from "../player/lib/layerOrdering";
 import { getTimelineElementIdentity } from "../player/lib/timelineElementHelpers";
 import { saveProjectFilesWithHistory, type RecordEditInput } from "../utils/studioFileHistory";
 import type { TimelineZIndexReorderCommit } from "./useTimelineEditingTypes";
-import { rootLengthAfterEdit, setCompositionDurationToContent } from "../utils/timelineAssetDrop";
+import { syncRootLength } from "../utils/timelineAssetDrop";
+import { isPreviewedFile } from "./timelineEditingGsap";
 import { readFileContent } from "./timelineTimingSync";
 import {
   findElementForSelection,
@@ -230,9 +231,21 @@ export function buildTimelineMoveTimingPatch(
   track?: number,
   animationEnd = 0,
 ): string {
+  const patched = patchTimelineMoveTiming(original, target, start, duration, track);
+  return syncRootLength(original, patched, animationEnd);
+}
+
+/** The clip's timing only; the root length is synced once per file by the caller. */
+export function patchTimelineMoveTiming(
+  original: string,
+  target: PatchTarget,
+  start: number,
+  duration: number,
+  track?: number,
+): string {
   if (!Number.isFinite(start) || !Number.isFinite(duration)) {
     console.warn(
-      `[Timeline] buildTimelineMoveTimingPatch: non-finite timing (start=${start}, duration=${duration}) — patch skipped`,
+      `[Timeline] patchTimelineMoveTiming: non-finite timing (start=${start}, duration=${duration}) — patch skipped`,
     );
     return original;
   }
@@ -248,12 +261,7 @@ export function buildTimelineMoveTimingPatch(
       value: formatTimelineAttributeNumber(track),
     });
   }
-  // Clip ends come from the SOURCE (raw data-duration), NOT the store — store
-  // durations are runtime-truncated, which would ratchet the length down every move.
-  return setCompositionDurationToContent(
-    patched,
-    rootLengthAfterEdit(original, patched, animationEnd),
-  );
+  return patched;
 }
 
 export function buildTimelineResizeTimingPatch(
@@ -262,6 +270,16 @@ export function buildTimelineResizeTimingPatch(
   element: TimelineElement,
   updates: Pick<TimelineElement, "start" | "duration" | "playbackStart">,
   animationEnd = 0,
+): string {
+  const patched = patchTimelineResizeTiming(original, target, element, updates);
+  return syncRootLength(original, patched, animationEnd);
+}
+
+export function patchTimelineResizeTiming(
+  original: string,
+  target: PatchTarget,
+  element: TimelineElement,
+  updates: Pick<TimelineElement, "start" | "duration" | "playbackStart">,
 ): string {
   const pbs = resolveResizePlaybackStart(original, target, element, updates);
   let patched = applyPatchByTarget(original, target, {
@@ -281,10 +299,7 @@ export function buildTimelineResizeTimingPatch(
       value: formatTimelineAttributeNumber(pbs.value),
     });
   }
-  return setCompositionDurationToContent(
-    patched,
-    rootLengthAfterEdit(original, patched, animationEnd),
-  );
+  return patched;
 }
 
 export interface PersistTimelineEditInput {
@@ -341,6 +356,8 @@ export interface PersistTimelineBatchEditInput {
   coalesceKey?: string;
   /** Per-entry undo coalesce window override (ms) — see EditHistoryEntry.coalesceMs. */
   coalesceMs?: number;
+  /** The live animation end, counted in the previewed file's root length only. */
+  animationEnd?: number;
 }
 
 export async function persistTimelineBatchEdit(
@@ -379,7 +396,17 @@ export async function persistTimelineBatchEdit(
 
   if (patchedByPath.size === 0) return;
 
-  const files = Object.fromEntries(patchedByPath);
+  const animationEnd = input.animationEnd ?? 0;
+  const files = Object.fromEntries(
+    Array.from(patchedByPath, ([path, patched]) => [
+      path,
+      syncRootLength(
+        originals.get(path) ?? patched,
+        patched,
+        isPreviewedFile(path, input.activeCompPath) ? animationEnd : 0,
+      ),
+    ]),
+  );
   for (const targetPath of Object.keys(files)) {
     input.pendingTimelineEditPathRef.current.add(targetPath);
   }
