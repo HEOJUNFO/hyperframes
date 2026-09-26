@@ -655,6 +655,42 @@ describe("createPickerModule", () => {
       }
     });
 
+    it("reaches a line box's leading from a big line in a small-font box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><div id="para">
+        <div id="l1"><span>Line one</span></div><div id="l2"><span>Line two</span></div></div></div>`;
+      // Two 120px lines, 100px apart, in boxes whose own font size is the default.
+      at("l1").getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 600, bottom: 120, width: 600, height: 120 }) as DOMRect;
+      at("l2").getBoundingClientRect = () =>
+        ({ left: 0, top: 220, right: 600, bottom: 340, width: 600, height: 120 }) as DOMRect;
+      const unlay = layOut({ "Line one": [0, 0, 600, 120], "Line two": [0, 220, 600, 120] });
+      const restore = emulateHitTest(() => [at("para"), at("bg")]);
+      try {
+        expect(selectorsAt(300, 190)).toEqual(["#para", "#bg"]);
+      } finally {
+        restore();
+        unlay();
+      }
+    });
+
+    it("does not look for text outside a clipping box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="layer"><div id="clip" style="overflow-x: hidden; overflow-y: hidden"><p>Clipped words</p></div></div>`;
+      // The box's text runs up past its top edge, where the box clips it away.
+      at("clip").getBoundingClientRect = () =>
+        ({ left: 0, top: 400, right: 600, bottom: 700, width: 600, height: 300 }) as DOMRect;
+      const unlay = layOut({ "Clipped words": [0, 0, 100, 40] });
+      const restore = emulateHitTest(() => [at("layer"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+      } finally {
+        restore();
+        unlay();
+      }
+    });
+
     it("counts an inset shadow, not an outer one: an outer shadow draws outside the box", () => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"></div>
