@@ -6,7 +6,7 @@ import { type TimelineElement, usePlayerStore } from "../player/store/playerStor
 import { applySoftReload, applySoftReloadFinalization } from "../utils/gsapSoftReload";
 import { furthestClipEndFromDocument } from "../player/lib/timelineElementHelpers";
 import type { RecordEditInput } from "../utils/studioFileHistory";
-import { patchDocumentRootDuration } from "./timelineEditingGsap";
+import { patchDocumentRootDuration, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { studioWriteHeaders } from "../utils/studioFileVersion";
 
 class GsapPreviewConvergenceError extends Error {}
@@ -85,7 +85,8 @@ function patchIframeRootDuration(iframe: HTMLIFrameElement | null, contentEnd: n
 
 /** Keep the duration readout and live root aligned with optimistically patched clips. */
 export function syncPreviewContentDuration(iframe: HTMLIFrameElement | null): void {
-  const end = furthestClipEndFromDocument(iframe?.contentDocument ?? null);
+  const clipsEnd = furthestClipEndFromDocument(iframe?.contentDocument);
+  const end = Math.max(clipsEnd, readLiveAnimationEnd(iframe));
   if (end > 0) {
     usePlayerStore.getState().setDuration(end);
     patchIframeRootDuration(iframe, end);

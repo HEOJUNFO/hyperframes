@@ -27,6 +27,7 @@ import {
   shiftGsapPositions,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
+import { readLiveAnimationEnd } from "./timelineEditingGsap";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -77,6 +78,17 @@ interface UseTimelineGroupEditingOptions {
 
 function targetPathFor(element: TimelineElement, activeCompPath: string | null): string {
   return element.sourceFile || activeCompPath || "index.html";
+}
+
+/** The live animation end belongs to the previewed composition's file only. */
+function animationEndFor(
+  element: TimelineElement,
+  activeCompPath: string | null,
+  animationEnd: number,
+): number {
+  return targetPathFor(element, activeCompPath) === (activeCompPath || "index.html")
+    ? animationEnd
+    : 0;
 }
 
 function allChangesSharePath(
@@ -279,6 +291,7 @@ export function useTimelineGroupEditing({
       // Optimistic duration readout: content-driven (grow AND shrink), read from
       // the just-patched live DOM. See syncPreviewContentDuration.
       syncPreviewContentDuration(previewIframeRef.current);
+      const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? moveCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;
       const label = options?.label ?? "Move timeline clips";
@@ -306,6 +319,7 @@ export function useTimelineGroupEditing({
                   change.start,
                   change.element.duration,
                   change.track,
+                  animationEndFor(change.element, activeCompPath, animationEnd),
                 ),
             })),
             coalesceKey,
@@ -392,6 +406,7 @@ export function useTimelineGroupEditing({
       // Optimistic duration readout: content-driven (grow AND shrink), read from
       // the just-patched live DOM. See syncPreviewContentDuration.
       syncPreviewContentDuration(previewIframeRef.current);
+      const animationEnd = readLiveAnimationEnd(previewIframeRef.current);
       const coalesceKey = options?.coalesceKey ?? resizeCoalesceKey(changes);
       const coalesceMs = options?.coalesceMs;
       return enqueueGroupOperation("Resize timeline clips", async (projectId) => {
@@ -415,11 +430,17 @@ export function useTimelineGroupEditing({
             changes.map((change) => ({
               element: change.element,
               buildPatches: (original, target) =>
-                buildTimelineResizeTimingPatch(original, target, change.element, {
-                  start: change.start,
-                  duration: change.duration,
-                  playbackStart: change.playbackStart,
-                }),
+                buildTimelineResizeTimingPatch(
+                  original,
+                  target,
+                  change.element,
+                  {
+                    start: change.start,
+                    duration: change.duration,
+                    playbackStart: change.playbackStart,
+                  },
+                  animationEndFor(change.element, activeCompPath, animationEnd),
+                ),
             })),
             coalesceKey,
             coalesceMs,

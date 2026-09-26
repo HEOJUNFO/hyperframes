@@ -231,6 +231,7 @@ export function buildTimelineMoveTimingPatch(
   start: number,
   duration: number,
   track?: number,
+  animationEnd = 0,
 ): string {
   if (!Number.isFinite(start) || !Number.isFinite(duration)) {
     console.warn(
@@ -254,8 +255,12 @@ export function buildTimelineMoveTimingPatch(
   // from the PATCHED SOURCE (raw data-duration), so it grows if a clip moved
   // past the end and shrinks if the furthest clip moved left. Measured from the
   // source, NOT the store — store durations are runtime-truncated to the current
-  // comp length, which would ratchet the duration down every move.
-  return setCompositionDurationToContent(patched, furthestClipEndFromSource(patched));
+  // comp length, which would ratchet the duration down every move. Never shorter
+  // than the live animations (animationEnd), so a move cannot cut them off.
+  return setCompositionDurationToContent(
+    patched,
+    Math.max(furthestClipEndFromSource(patched), animationEnd),
+  );
 }
 
 export function buildTimelineResizeTimingPatch(
@@ -263,6 +268,7 @@ export function buildTimelineResizeTimingPatch(
   target: PatchTarget,
   element: TimelineElement,
   updates: Pick<TimelineElement, "start" | "duration" | "playbackStart">,
+  animationEnd = 0,
 ): string {
   const pbs = resolveResizePlaybackStart(original, target, element, updates);
   let patched = applyPatchByTarget(original, target, {
@@ -284,8 +290,11 @@ export function buildTimelineResizeTimingPatch(
   }
   // Content-driven duration from the PATCHED SOURCE (raw data-duration) —
   // grows/shrinks to the furthest clip end. Not from the store, whose
-  // durations are runtime-truncated.
-  return setCompositionDurationToContent(patched, furthestClipEndFromSource(patched));
+  // durations are runtime-truncated. Never shorter than the live animations.
+  return setCompositionDurationToContent(
+    patched,
+    Math.max(furthestClipEndFromSource(patched), animationEnd),
+  );
 }
 
 export interface PersistTimelineEditInput {

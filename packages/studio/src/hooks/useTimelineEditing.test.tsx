@@ -1453,6 +1453,121 @@ describe("useTimelineEditing duration rollback on failed persist", () => {
     hook.unmount();
   });
 
+  describe("never shrinks below the live animation end", () => {
+    // The last clip ends at 5s and so do the animations; editing the clip to end at 4s must keep 5s.
+    const ANIMATED_SOURCE = [
+      `<div data-composition-id="main" data-duration="5">`,
+      `  <div id="clip" data-start="3" data-duration="2" data-track-index="0"></div>`,
+      `</div>`,
+    ].join("\n");
+
+    async function expectLengthKept(
+      edit: (hook: ReturnType<typeof renderTimelineEditingHook>, clip: TimelineElement) => unknown,
+      // Another file's root is not the previewed one, so the live animations do not count there.
+      { sourceFile = "index.html", fileDuration = "5" } = {},
+    ): Promise<void> {
+      const iframe = createRootedIframe(ANIMATED_SOURCE);
+      (iframe.contentWindow as unknown as { __hf: unknown }).__hf = { animationEnd: () => 5 };
+      const clip = timelineElement({
+        id: "clip",
+        track: 0,
+        zIndex: 0,
+        start: 3,
+        duration: 2,
+        sourceFile,
+      });
+      const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+      stubProjectFetch(ANIMATED_SOURCE);
+      usePlayerStore.getState().setDuration(5);
+      const hook = renderTimelineEditingHook({
+        timelineElements: [clip],
+        iframe,
+        onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+        projectId: "p1",
+        writeProjectFile,
+        recordEdit: vi.fn(async () => {}),
+        reloadPreview: vi.fn(),
+      });
+
+      await act(async () => {
+        await edit(hook, clip);
+        await flushAsyncWork();
+      });
+
+      expect(rootDurationAttr(iframe)).toBe("5");
+      expect(usePlayerStore.getState().duration).toBe(5);
+      expect(writeProjectFile).toHaveBeenCalledTimes(1);
+      expect(String(writeProjectFile.mock.calls[0]![1])).toContain(
+        `data-composition-id="main" data-duration="${fileDuration}"`,
+      );
+      hook.unmount();
+    }
+
+    it("on move", () => expectLengthKept((hook, clip) => hook.move(clip, { start: 2, track: 0 })));
+
+    it("on resize", () =>
+      expectLengthKept((hook, clip) =>
+        hook.resize(clip, { start: 3, duration: 1, playbackStart: undefined }),
+      ));
+
+    it("on group move", () =>
+      expectLengthKept((hook, clip) => hook.groupMove([{ element: clip, start: 2 }])));
+
+    it("on group resize", () =>
+      expectLengthKept((hook, clip) =>
+        hook.groupResize([{ element: clip, start: 3, duration: 1 }]),
+      ));
+
+    it("but not in another composition's file", async () => {
+      const subFile = { sourceFile: "sub.html", fileDuration: "4" };
+      await expectLengthKept((hook, clip) => hook.move(clip, { start: 2, track: 0 }), subFile);
+      await expectLengthKept(
+        (hook, clip) => hook.groupMove([{ element: clip, start: 2 }]),
+        subFile,
+      );
+    });
+
+    it("on delete", async () => {
+      const removed = ANIMATED_SOURCE.replace(/\n.*id="clip".*/, "").replace(
+        "</div>",
+        `  <div id="head" data-start="0" data-duration="1" data-track-index="0"></div>\n</div>`,
+      );
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: Parameters<typeof fetch>[0]) =>
+          requestUrl(input).includes("/remove-element/")
+            ? jsonResponse({ changed: true, content: removed })
+            : jsonResponse({ content: ANIMATED_SOURCE }),
+        ),
+      );
+      const iframe = createRootedIframe(ANIMATED_SOURCE);
+      (iframe.contentWindow as unknown as { __hf: unknown }).__hf = { animationEnd: () => 5 };
+      const clip = timelineElement({ id: "clip", track: 0, zIndex: 0, start: 3, duration: 2 });
+      const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+      usePlayerStore.getState().setDuration(5);
+      const hook = renderTimelineEditingHook({
+        timelineElements: [clip],
+        iframe,
+        onZIndexCommit: vi.fn().mockResolvedValue(undefined),
+        projectId: "p1",
+        writeProjectFile,
+        recordEdit: vi.fn(async () => {}),
+        reloadPreview: vi.fn(),
+      });
+
+      await act(async () => {
+        await hook.del(clip);
+        await flushAsyncWork();
+      });
+
+      expect(usePlayerStore.getState().duration).toBe(5);
+      expect(String(writeProjectFile.mock.calls[0]![1])).toContain(
+        'data-composition-id="main" data-duration="5"',
+      );
+      hook.unmount();
+    });
+  });
+
   it("keeps the grown duration when the persist succeeds", async () => {
     const { iframe, clip, hook } = setupFailedPersist();
     // Same harness, but with a write that succeeds this time.

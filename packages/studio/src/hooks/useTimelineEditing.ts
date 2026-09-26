@@ -21,6 +21,7 @@ import {
   readFileContent,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
+import { readLiveAnimationEnd } from "./timelineEditingGsap";
 import type { PersistTimelineEditInput } from "./timelineEditingHelpers";
 import { useSetAudioGroupAttribute } from "./timelineAudioGroupVolume";
 import { useSetElementAttribute } from "./timelineElementFxAttribute";
@@ -216,6 +217,10 @@ export function useTimelineEditing({
         const needsExtension = extendRootDurationIfNeeded(updates.start + element.duration);
         // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
         syncPreviewContentDuration(previewIframeRef.current);
+        const animationEnd =
+          targetPath === (activeCompPath || "index.html")
+            ? readLiveAnimationEnd(previewIframeRef.current)
+            : 0;
 
         const buildMovePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
           // Persist lane changes too — data-start-only writes let reload snap the lane back.
@@ -226,6 +231,7 @@ export function useTimelineEditing({
             updates.start,
             element.duration,
             track,
+            animationEnd,
           );
         };
         const coalesceKey = `timeline-move:${element.hfId ?? element.id}`;
@@ -324,8 +330,12 @@ export function useTimelineEditing({
       // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
       syncPreviewContentDuration(previewIframeRef.current);
       const targetPath = element.sourceFile || activeCompPath || "index.html";
+      const animationEnd =
+        targetPath === (activeCompPath || "index.html")
+          ? readLiveAnimationEnd(previewIframeRef.current)
+          : 0;
       const buildResizePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
-        return buildTimelineResizeTimingPatch(original, target, element, updates);
+        return buildTimelineResizeTimingPatch(original, target, element, updates, animationEnd);
       };
       const hasPbsAdjustment =
         updates.playbackStart != null ||

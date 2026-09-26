@@ -1369,6 +1369,56 @@ describe("initSandboxRuntimeModular", () => {
     expect(window.__player?.getDuration()).toBe(10);
   });
 
+  describe("animation end", () => {
+    const mountRoot = (declared: string) => {
+      const root = document.createElement("div");
+      root.setAttribute("data-composition-id", "main");
+      root.setAttribute("data-root", "true");
+      root.setAttribute("data-start", "0");
+      root.setAttribute("data-duration", declared);
+      document.body.appendChild(root);
+    };
+
+    it("reports where a padded timeline's animation ends, not the declared length", () => {
+      mountRoot("10");
+      const timeline = createPaddableMockTimeline(4);
+      window.__timelines = { main: timeline };
+      initSandboxRuntimeModular();
+
+      expect(timeline.duration()).toBe(10);
+      expect(window.__hf?.animationEnd?.()).toBe(4);
+    });
+
+    it("keeps the animation end when a longer declared length pads the timeline again", () => {
+      mountRoot("10");
+      const timeline = createPaddableMockTimeline(4);
+      window.__timelines = { main: timeline };
+      initSandboxRuntimeModular();
+
+      document.querySelector("[data-root]")!.setAttribute("data-duration", "12");
+      (window as Window & { __hfForceTimelineRebind?: () => void }).__hfForceTimelineRebind?.();
+
+      expect(timeline.duration()).toBe(12);
+      expect(window.__hf?.animationEnd?.()).toBe(4);
+    });
+
+    it("reports an animation that runs past the declared length", () => {
+      mountRoot("3");
+      window.__timelines = { main: createMockTimeline(5) };
+      initSandboxRuntimeModular();
+
+      expect(window.__hf?.animationEnd?.()).toBe(5);
+    });
+
+    it("reports no end for a loop-inflated timeline", () => {
+      mountRoot("3");
+      window.__timelines = { main: createMockTimeline(100_000) };
+      initSandboxRuntimeModular();
+
+      expect(window.__hf?.animationEnd?.()).toBeNull();
+    });
+  });
+
   // #6: a single timeline registered under a key that does NOT match the root's
   // data-composition-id must still bind (sole-timeline fallback) instead of
   // silently rendering the frozen t=0 DOM.

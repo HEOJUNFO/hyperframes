@@ -37,7 +37,11 @@ import { probeAndCacheElementVolume, type VolumeKeyframe } from "./mediaVolumeEn
 import { createPickerModule } from "./picker";
 import { createRuntimePlayer, type RuntimePlayerTransport } from "./player";
 import { createRuntimeState } from "./state";
-import { collectRuntimeTimelinePayload, isRuntimeElementVisibleAt } from "./timeline";
+import {
+  collectRuntimeTimelinePayload,
+  isRuntimeElementVisibleAt,
+  LOOP_INFLATED_TIMELINE_SECONDS,
+} from "./timeline";
 import {
   findRootCompositionElement,
   parseCompositionDimension,
@@ -1265,6 +1269,9 @@ export function initSandboxRuntimeModular(): void {
     return safeDuration > 0 ? Math.max(0, safeDuration) : 0;
   };
 
+  // The length each padded root timeline had before the runtime extended it to the declared length.
+  const rootTimelinePads = new WeakMap<RuntimeTimelineLike, { at: number; before: number }>();
+
   const resolveRootTimelineFromDocument = (): TimelineResolution => {
     const timelines = (window.__timelines ?? {}) as Record<string, RuntimeTimelineLike | undefined>;
     // DX fallback (#6): when the root timeline cannot be resolved by id but
@@ -1607,6 +1614,12 @@ export function initSandboxRuntimeModular(): void {
             try {
               // Placing a zero-duration tween at the floor extends
               // timeline.duration() to exactly that point.
+              // A second pad sees the first in the timeline's length, so keep the first length.
+              const prior = rootTimelinePads.get(rootTimeline);
+              rootTimelinePads.set(rootTimeline, {
+                at: Math.max(prior?.at ?? 0, rootDurationFloorSeconds),
+                before: prior?.before ?? rootDurationSeconds,
+              });
               tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds);
             } catch (err) {
               // keep runtime resilient
@@ -2702,6 +2715,15 @@ export function initSandboxRuntimeModular(): void {
   };
   window.__hf.leasePausedMedia = leasePausedMedia;
   window.__hf.releasePausedMedia = releasePausedMedia;
+  window.__hf.animationEnd = () => {
+    const timeline = state.capturedTimeline;
+    const live = getTimelineDurationSeconds(timeline) ?? 0;
+    const pad = timeline ? rootTimelinePads.get(timeline) : undefined;
+    // A timeline that grows after padding but stays under the pad still reads its pre-pad length.
+    const timelineEnd = pad && live <= pad.at ? pad.before : live;
+    const end = Math.max(timelineEnd, resolveAdapterDurationFloorSeconds() ?? 0);
+    return end > 0 && end < LOOP_INFLATED_TIMELINE_SECONDS ? end : null;
+  };
   window.__hf.audioMeter = {
     start: () => webAudio.startMetering(),
     stop: () => webAudio.stopMetering(),

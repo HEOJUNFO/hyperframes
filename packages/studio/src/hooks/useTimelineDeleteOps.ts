@@ -10,6 +10,7 @@ import { studioWriteHeaders } from "../utils/studioFileVersion";
 import { getTimelineElementLabel } from "../utils/studioHelpers";
 import { buildPatchTarget, removeIframeTimelineElements } from "./timelineEditingHelpers";
 import { captureDurationRollback, readFileContent } from "./timelineTimingSync";
+import { readLiveAnimationEnd } from "./timelineEditingGsap";
 import { setCompositionDurationToContent } from "../utils/timelineAssetDrop";
 import { furthestClipEndFromSource } from "../player/lib/timelineElementHelpers";
 import {
@@ -99,6 +100,8 @@ export function useTimelineDeleteOps({
       const sameFile = selection.filter(
         (candidate) => (candidate.sourceFile || activeCompPath || "index.html") === targetPath,
       );
+      const isRootFile = targetPath === (activeCompPath || "index.html");
+      const animationEnd = isRootFile ? readLiveAnimationEnd(previewIframeRef.current) : 0;
       try {
         const originalContent = await readFileContent(pid, targetPath);
 
@@ -138,13 +141,13 @@ export function useTimelineDeleteOps({
         // remaining clip end, read from the post-removal SOURCE (raw
         // data-duration), so deleting the last/longest clip removes trailing
         // empty space. Measured from the source, not the store, whose
-        // durations are runtime-truncated.
-        const deleteContentEnd = furthestClipEndFromSource(removedContent);
+        // durations are runtime-truncated. Never shorter than the live animations.
+        const deleteContentEnd = Math.max(furthestClipEndFromSource(removedContent), animationEnd);
         const patchedContent = setCompositionDurationToContent(removedContent, deleteContentEnd);
         // Optimistically reflect the shrunk length in the readout/seek bar,
         // rolling it back if the persist below fails (see captureDurationRollback).
         const rollbackDuration = captureDurationRollback(previewIframeRef.current);
-        if (deleteContentEnd > 0 && targetPath === (activeCompPath || "index.html")) {
+        if (deleteContentEnd > 0 && isRootFile) {
           usePlayerStore.getState().setDuration(deleteContentEnd);
         }
 
