@@ -6,6 +6,7 @@ import {
 } from "@hyperframes/studio-server";
 import type { AppliedFileMutation, PatchOperation } from "@hyperframes/studio-server";
 import { fpsToNumber, parseFpsWithDefault } from "@hyperframes/core";
+import { spansOverlap } from "@hyperframes/core/clip-facts";
 import { readCompositionFps } from "../utils/compositionFps.js";
 import { readFileSync } from "node:fs";
 import type { ProjectTimeline, TimelineRow } from "./describeProject.js";
@@ -147,7 +148,7 @@ function overlap(
       candidate !== row &&
       candidate.file === row.file &&
       candidate.trackIndex === row.trackIndex &&
-      Math.max(start, candidate.start) < Math.min(end, candidate.end),
+      spansOverlap(start, end, candidate.start, candidate.end),
   );
 }
 
@@ -413,8 +414,7 @@ export function mutationConflict(
       (candidate) =>
         candidate.file === row.file &&
         candidate.trackIndex === row.trackIndex &&
-        candidate.start < nextStart &&
-        nextStart < candidate.end,
+        spansOverlap(nextStart, nextStart, candidate.start, candidate.end),
     );
     if (!conflict) return null;
     return {

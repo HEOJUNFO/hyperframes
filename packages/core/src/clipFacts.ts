@@ -34,6 +34,12 @@ const roundTo3 = (n: number) => Math.round(n * 1000) / 1000;
 
 const num = (n: number) => String(roundTo3(n));
 
+export const FLOAT_FUZZ_SECONDS = 1e-6;
+
+export function spansOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd - FLOAT_FUZZ_SECONDS && bStart < aEnd - FLOAT_FUZZ_SECONDS;
+}
+
 export function formatClipLine(clip: ClipFact): string {
   const parts = [
     `${clip.kind} "${clip.id}"`,

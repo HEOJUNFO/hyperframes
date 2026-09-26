@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isClipVisibleAt } from "@hyperframes/core";
 import { describe, expect, it } from "vitest";
 
 const cliEntry = resolve(fileURLToPath(import.meta.url), "..", "..", "cli.ts");
@@ -101,6 +102,72 @@ describe("timeline edit command", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  const meeting = (aStart: string, aDuration: string, bStart: string, fps = "") =>
+    `<div data-composition-id="main"${fps} data-duration="40"><div id="a" data-hf-id="a" data-start="${aStart}" data-duration="${aDuration}" data-track-index="0"></div><div id="b" data-hf-id="b" data-start="${bStart}" data-duration="2" data-track-index="0"></div></div>`;
+  const clip = (html: string, id: string) => {
+    const tag = new RegExp(`<div[^>]*\\sid="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+    const attr = (name: string) => new RegExp(`${name}="([^"]+)"`).exec(tag)?.[1];
+    return { start: attr("data-start"), duration: attr("data-duration") };
+  };
+  const endOf = (html: string, id: string) =>
+    Number(clip(html, id).start) + Number(clip(html, id).duration);
+  const visibleAt = (html: string, time: number, ids: string[]) =>
+    ids.filter((id) => isClipVisibleAt(time, Number(clip(html, id).start), endOf(html, id), 40));
+
+  it("trims a clip that only meets the one before it, ending exactly where asked", () => {
+    const dir = project();
+    try {
+      writeFileSync(join(dir, "index.html"), meeting("19.8", "6.4", "26.2"));
+      expect(run(dir, "trim", "#b", "--end", "29").status).toBe(0);
+      const html = readFileSync(join(dir, "index.html"), "utf8");
+      expect(clip(html, "b")).toEqual({ start: "26.2", duration: "2.8000000000000007" });
+      expect(endOf(html, "b")).toBe(29);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("trims to frame 20 at 30 fps so that frame shows the next clip and not this one", () => {
+    const dir = project();
+    try {
+      writeFileSync(join(dir, "index.html"), meeting("0", "2", "2", ' data-fps="30"'));
+      expect(run(dir, "trim", "#a", "--end", "20f").status).toBe(0);
+      expect(run(dir, "trim", "#b", "--start", "20f").status).toBe(0);
+      const html = readFileSync(join(dir, "index.html"), "utf8");
+      expect([clip(html, "a").duration, clip(html, "b").start]).toEqual([
+        "0.6666666666666666",
+        "0.6666666666666666",
+      ]);
+      expect(visibleAt(html, 19 / 30, ["a", "b"])).toEqual(["a"]);
+      expect(visibleAt(html, 20 / 30, ["a", "b"])).toEqual(["b"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["19.8", "6.4", "26.2"],
+    ["0", "0.6666666666666666", "0.6666666666666666"],
+    ["0.1", "1.1", "1.2"],
+  ])(
+    "duplicates a clip at %s lasting %s up against the clip at %s, each boundary exact",
+    (aStart, aDuration, bStart) => {
+      const dir = project();
+      try {
+        writeFileSync(join(dir, "index.html"), meeting(aStart, aDuration, bStart));
+        expect(run(dir, "duplicate", "#a").status).toBe(0);
+        const html = readFileSync(join(dir, "index.html"), "utf8");
+        const ids = ["a", "a-copy", "b"];
+        expect(Number(clip(html, "a-copy").start)).toBe(endOf(html, "a"));
+        expect(Number(clip(html, "b").start)).toBe(endOf(html, "a-copy"));
+        expect(visibleAt(html, endOf(html, "a"), ids)).toEqual(["a-copy"]);
+        expect(visibleAt(html, endOf(html, "a-copy"), ids)).toEqual(["b"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("refuses an ambiguous reference", () => {
     const dir = project();

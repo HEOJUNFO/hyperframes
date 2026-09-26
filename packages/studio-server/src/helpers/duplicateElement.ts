@@ -1,3 +1,4 @@
+import { FLOAT_FUZZ_SECONDS } from "@hyperframes/core/clip-facts";
 import { ensureHfIds } from "@hyperframes/parsers/hf-ids";
 import {
   findTargetElement,
@@ -59,9 +60,9 @@ function rippleElements(
       continue;
     }
     const start = numericAttribute(candidate, "data-start");
-    if (start !== null && start >= at) {
-      candidate.setAttribute("data-start", String(start + duration));
-    }
+    if (start === null || start < at - FLOAT_FUZZ_SECONDS) continue;
+    const metInsertionPoint = start <= at + FLOAT_FUZZ_SECONDS;
+    candidate.setAttribute("data-start", String((metInsertionPoint ? at : start) + duration));
   }
 }
 

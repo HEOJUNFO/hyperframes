@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { byStart, formatClipLine, type ClipFact } from "./clipFacts.js";
+import { byStart, formatClipLine, spansOverlap, type ClipFact } from "./clipFacts.js";
 
 const clip = (over: Partial<ClipFact> = {}): ClipFact => ({
   id: "a",
@@ -58,5 +58,18 @@ describe("byStart", () => {
   it("orders by start, then track", () => {
     const rows = [clip({ id: "c", start: 2 }), clip({ id: "b", trackIndex: 1 }), clip({ id: "a" })];
     expect(rows.sort(byStart).map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("spansOverlap", () => {
+  it("counts clips that only meet as apart, though the float sum of the first overshoots", () => {
+    expect(19.8 + 6.4).toBeGreaterThan(26.2);
+    expect(spansOverlap(19.8, 19.8 + 6.4, 26.2, 29)).toBe(false);
+    expect(spansOverlap(26.2, 29, 19.8, 19.8 + 6.4)).toBe(false);
+  });
+
+  it("counts clips that share time as overlapping", () => {
+    expect(spansOverlap(0, 2, 1.9, 3)).toBe(true);
+    expect(spansOverlap(1, 2, 0, 5)).toBe(true);
   });
 });
