@@ -1402,6 +1402,30 @@ describe("initSandboxRuntimeModular", () => {
       expect(window.__hf?.animationEnd?.()).toBe(4);
     });
 
+    it("reports no animation for an empty root timeline the runtime fills to the declared length", () => {
+      mountRoot("10");
+      window.gsap = {
+        timeline: () => createPaddableMockTimeline(0),
+      } as unknown as typeof window.gsap;
+      window.__timelines = { main: createMockTimeline(0) };
+      initSandboxRuntimeModular();
+
+      expect(window.__player?.getDuration()).toBe(10);
+      expect(window.__hf?.animationEnd?.()).toBeNull();
+    });
+
+    it("counts an animation adapter that runs past the root timeline", () => {
+      mountRoot("3");
+      window.__hfLottie = [{ goToAndStop: () => {}, totalFrames: 600, frameRate: 30 }] as never;
+      window.__timelines = { main: createMockTimeline(2) };
+      try {
+        initSandboxRuntimeModular();
+        expect(window.__hf?.animationEnd?.()).toBeCloseTo(20, 3);
+      } finally {
+        delete (window as Window & { __hfLottie?: unknown[] }).__hfLottie;
+      }
+    });
+
     it("reports an animation that runs past the declared length", () => {
       mountRoot("3");
       window.__timelines = { main: createMockTimeline(5) };

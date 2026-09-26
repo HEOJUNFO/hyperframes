@@ -21,7 +21,7 @@ import {
   readFileContent,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
-import { readLiveAnimationEnd } from "./timelineEditingGsap";
+import { animationEndFor } from "./timelineEditingGsap";
 import type { PersistTimelineEditInput } from "./timelineEditingHelpers";
 import { useSetAudioGroupAttribute } from "./timelineAudioGroupVolume";
 import { useSetElementAttribute } from "./timelineElementFxAttribute";
@@ -217,10 +217,7 @@ export function useTimelineEditing({
         const needsExtension = extendRootDurationIfNeeded(updates.start + element.duration);
         // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
         syncPreviewContentDuration(previewIframeRef.current);
-        const animationEnd =
-          targetPath === (activeCompPath || "index.html")
-            ? readLiveAnimationEnd(previewIframeRef.current)
-            : 0;
+        const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
 
         const buildMovePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
           // Persist lane changes too — data-start-only writes let reload snap the lane back.
@@ -330,10 +327,7 @@ export function useTimelineEditing({
       // Optimistic duration readout: content-driven (grow AND shrink), from the just-patched live DOM. See syncPreviewContentDuration.
       syncPreviewContentDuration(previewIframeRef.current);
       const targetPath = element.sourceFile || activeCompPath || "index.html";
-      const animationEnd =
-        targetPath === (activeCompPath || "index.html")
-          ? readLiveAnimationEnd(previewIframeRef.current)
-          : 0;
+      const animationEnd = animationEndFor(previewIframeRef.current, targetPath, activeCompPath);
       const buildResizePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
         return buildTimelineResizeTimingPatch(original, target, element, updates, animationEnd);
       };

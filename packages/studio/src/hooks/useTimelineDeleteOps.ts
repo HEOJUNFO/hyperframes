@@ -10,7 +10,7 @@ import { studioWriteHeaders } from "../utils/studioFileVersion";
 import { getTimelineElementLabel } from "../utils/studioHelpers";
 import { buildPatchTarget, removeIframeTimelineElements } from "./timelineEditingHelpers";
 import { captureDurationRollback, readFileContent } from "./timelineTimingSync";
-import { readLiveAnimationEnd } from "./timelineEditingGsap";
+import { isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { setCompositionDurationToContent } from "../utils/timelineAssetDrop";
 import { furthestClipEndFromSource } from "../player/lib/timelineElementHelpers";
 import {
@@ -100,7 +100,7 @@ export function useTimelineDeleteOps({
       const sameFile = selection.filter(
         (candidate) => (candidate.sourceFile || activeCompPath || "index.html") === targetPath,
       );
-      const isRootFile = targetPath === (activeCompPath || "index.html");
+      const isRootFile = isPreviewedFile(targetPath, activeCompPath);
       const animationEnd = isRootFile ? readLiveAnimationEnd(previewIframeRef.current) : 0;
       try {
         const originalContent = await readFileContent(pid, targetPath);

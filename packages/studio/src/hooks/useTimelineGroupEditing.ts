@@ -27,7 +27,7 @@ import {
   shiftGsapPositions,
   syncPreviewContentDuration,
 } from "./timelineTimingSync";
-import { readLiveAnimationEnd } from "./timelineEditingGsap";
+import { isPreviewedFile, readLiveAnimationEnd } from "./timelineEditingGsap";
 import { getStudioSaveErrorMessage } from "../utils/studioSaveDiagnostics";
 
 export interface TimelineGroupMoveChange {
@@ -81,14 +81,12 @@ function targetPathFor(element: TimelineElement, activeCompPath: string | null):
 }
 
 /** The live animation end belongs to the previewed composition's file only. */
-function animationEndFor(
+function previewedAnimationEnd(
   element: TimelineElement,
   activeCompPath: string | null,
   animationEnd: number,
 ): number {
-  return targetPathFor(element, activeCompPath) === (activeCompPath || "index.html")
-    ? animationEnd
-    : 0;
+  return isPreviewedFile(targetPathFor(element, activeCompPath), activeCompPath) ? animationEnd : 0;
 }
 
 function allChangesSharePath(
@@ -319,7 +317,7 @@ export function useTimelineGroupEditing({
                   change.start,
                   change.element.duration,
                   change.track,
-                  animationEndFor(change.element, activeCompPath, animationEnd),
+                  previewedAnimationEnd(change.element, activeCompPath, animationEnd),
                 ),
             })),
             coalesceKey,
@@ -439,7 +437,7 @@ export function useTimelineGroupEditing({
                     duration: change.duration,
                     playbackStart: change.playbackStart,
                   },
-                  animationEndFor(change.element, activeCompPath, animationEnd),
+                  previewedAnimationEnd(change.element, activeCompPath, animationEnd),
                 ),
             })),
             coalesceKey,

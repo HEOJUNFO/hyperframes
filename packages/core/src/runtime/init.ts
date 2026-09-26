@@ -1358,6 +1358,11 @@ export function initSandboxRuntimeModular(): void {
       if (typeof withTween.to === "function") {
         try {
           withTween.to({}, { duration: durationSeconds });
+          // The filler is padding: only the wrapped root timeline's own length is animation.
+          rootTimelinePads.set(fallbackTimeline, {
+            at: durationSeconds,
+            before: getTimelineDurationSeconds(existingRootTimeline) ?? 0,
+          });
         } catch (err) {
           // no-op; if tween creation fails, caller will discard by unusable duration
           swallow("runtime.init.site3", err);
@@ -1612,14 +1617,14 @@ export function initSandboxRuntimeModular(): void {
           };
           if (typeof tlWithTo.to === "function") {
             try {
-              // Placing a zero-duration tween at the floor extends
-              // timeline.duration() to exactly that point.
               // A second pad sees the first in the timeline's length, so keep the first length.
               const prior = rootTimelinePads.get(rootTimeline);
               rootTimelinePads.set(rootTimeline, {
-                at: Math.max(prior?.at ?? 0, rootDurationFloorSeconds),
+                at: rootDurationFloorSeconds,
                 before: prior?.before ?? rootDurationSeconds,
               });
+              // Placing a zero-duration tween at the floor extends
+              // timeline.duration() to exactly that point.
               tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds);
             } catch (err) {
               // keep runtime resilient
