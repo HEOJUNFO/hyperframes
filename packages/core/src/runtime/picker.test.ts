@@ -397,14 +397,8 @@ describe("createPickerModule", () => {
       }
     });
 
-    it("counts text across its line boxes, and not the rest of its box", () => {
-      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
-      document.body.innerHTML = `<div id="bg" style="${BG}"><p id="para">One line<br>Two line</p></div>`;
-      // jsdom lays nothing out: each line gets the glyph box Chromium would measure.
-      const glyphs: Record<string, number[]> = {
-        "One line": [100, 100, 400, 46],
-        "Two line": [100, 220, 380, 46],
-      };
+    // jsdom lays nothing out: each named text gets the glyph box Chromium would measure.
+    function layOut(glyphs: Record<string, [number, number, number, number]>): () => void {
       const proto = Range.prototype as any;
       const select = proto.selectNodeContents;
       const placed = new WeakMap<Range, Node>();
@@ -412,11 +406,21 @@ describe("createPickerModule", () => {
         placed.set(this, node);
       };
       proto.getClientRects = function (this: Range) {
-        const box = glyphs[placed.get(this)?.nodeValue ?? ""];
+        const box = glyphs[placed.get(this)?.nodeValue?.trim() ?? ""];
         if (!box) return [];
-        const [left, top, width, height] = box as [number, number, number, number];
+        const [left, top, width, height] = box;
         return [{ left, top, width, height, right: left + width, bottom: top + height }];
       };
+      return () => {
+        proto.selectNodeContents = select;
+        delete proto.getClientRects;
+      };
+    }
+
+    it("counts text across its line boxes, and not the rest of its box", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><p id="para">One line<br>Two line</p></div>`;
+      const unlay = layOut({ "One line": [100, 100, 400, 46], "Two line": [100, 220, 380, 46] });
       const restore = emulateHitTest(() => [at("para"), at("bg")]);
       try {
         expect(selectorsAt(300, 120)).toEqual(["#para", "#bg"]);
@@ -424,8 +428,77 @@ describe("createPickerModule", () => {
         expect(selectorsAt(300, 600)).toEqual(["#bg"]);
       } finally {
         restore();
-        proto.selectNodeContents = select;
-        delete proto.getClientRects;
+        unlay();
+      }
+    });
+
+    it("does not count a layer's text that lays out no boxes (an SVG title, fallback content)", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><h1 id="title">Hi</h1></div>
+        <div id="layer"><span>Logo</span></div>`;
+      const unlay = layOut({ Hi: [0, 0, 100, 40] });
+      const restore = emulateHitTest(() => [at("layer"), at("title"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#title", "#bg"]);
+      } finally {
+        restore();
+        unlay();
+      }
+    });
+
+    it("keeps a box holding a drawn picture, though the box draws nothing itself", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="wrap"><img id="pic"></div><div id="mask"></div>`;
+      const restore = emulateHitTest(() => [at("mask"), at("pic"), at("wrap")]);
+      try {
+        expect(selectorsAt()).toEqual(["#pic", "#wrap"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("counts an SVG's shapes, not the SVG box around them", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"><h1 id="title">Hi</h1></div>
+        <svg id="lines"><circle id="dot" r="4"></circle></svg>`;
+      const restore = emulateHitTest(() => [at("lines"), at("title"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#title", "#bg"]);
+      } finally {
+        restore();
+      }
+      const onDot = emulateHitTest(() => [at("dot"), at("lines"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#dot", "#lines", "#bg"]);
+      } finally {
+        onDot();
+      }
+    });
+
+    it("counts a border on its band, not across the box it frames", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="frame" style="border: 4px solid rgb(0, 200, 120)"></div>`;
+      at("frame").getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }) as DOMRect;
+      const restore = emulateHitTest(() => [at("frame"), at("bg")]);
+      try {
+        expect(selectorsAt(50, 50)).toEqual(["#bg"]);
+        expect(selectorsAt(2, 50)).toEqual(["#frame", "#bg"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("does not count transparent text", () => {
+      createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
+      document.body.innerHTML = `<div id="bg" style="${BG}"></div>
+        <div id="ghost" style="color: transparent">Hidden words</div>`;
+      const restore = emulateHitTest(() => [at("ghost"), at("bg")]);
+      try {
+        expect(selectorsAt()).toEqual(["#bg"]);
+      } finally {
+        restore();
       }
     });
 

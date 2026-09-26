@@ -2,74 +2,34 @@ import { COLOR_GRADING_SOURCE_HIDDEN_ATTR } from "../colorGrading";
 
 type Rect = { left: number; right: number; top: number; bottom: number };
 
-const TRANSPARENT = /^(|transparent|rgba\(.*,\s*0\))$/;
+const TRANSPARENT = /^(|transparent|rgba\(.*,\s*0\)|.*\/\s*0%?\s*\))$/;
 const PICTURES = new Set(["IMG", "VIDEO", "IFRAME", "EMBED", "OBJECT", "CANVAS"]);
 const SVG_NS = "http://www.w3.org/2000/svg";
+const SVG_BOXES = new Set(["svg", "g", "foreignObject"]);
 const SIDES = ["Top", "Right", "Bottom", "Left"] as const;
+// Ceiling: a candidate's first 200 shown text nodes decide; text past them counts as not drawn.
+const TEXT_BUDGET = 200;
 
-function paints(style: CSSStyleDeclaration): boolean {
-  const image = style.backgroundImage;
-  if (image && image !== "none") return true;
-  return !TRANSPARENT.test(style.backgroundColor);
-}
+const paints = (style: CSSStyleDeclaration): boolean =>
+  (Boolean(style.backgroundImage) && style.backgroundImage !== "none") ||
+  !TRANSPARENT.test(style.backgroundColor);
 
-/** A border, a shadow, or ::before/::after content (icon fonts, rings). */
-function decorated(el: Element, style: CSSStyleDeclaration): boolean {
-  if (style.boxShadow && style.boxShadow !== "none") return true;
-  const bordered = SIDES.some(
-    (side) =>
-      Number.parseFloat(style[`border${side}Width`]) > 0 &&
-      style[`border${side}Style`] !== "none" &&
-      !TRANSPARENT.test(style[`border${side}Color`]),
+const borderWidths = (style: CSSStyleDeclaration): number[] =>
+  SIDES.map((side) =>
+    style[`border${side}Style`] !== "none" && !TRANSPARENT.test(style[`border${side}Color`])
+      ? Number.parseFloat(style[`border${side}Width`]) || 0
+      : 0,
   );
-  if (bordered) return true;
-  const view = el.ownerDocument.defaultView;
-  return ["::before", "::after"].some((pseudo) => {
-    const content = view?.getComputedStyle(el, pseudo).content;
-    return Boolean(content) && content !== "none" && content !== "normal";
-  });
-}
 
-/** Hidden itself (a child may turn visibility back on), or undisplayed or faded out anywhere up to `root`. */
-function unseenText(node: Node, root: Element): boolean {
-  const view = root.ownerDocument.defaultView;
-  let el = node.parentElement;
-  if (el && view?.getComputedStyle(el).visibility === "hidden") return true;
-  for (; el && view; el = el.parentElement) {
-    const style = view.getComputedStyle(el);
-    const faded =
-      Number.parseFloat(style.opacity) <= 0.01 &&
-      !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR);
-    if (style.display === "none" || faded) return true;
-    if (el === root) return false;
-  }
-  return false;
-}
-
-/** Glyph boxes of the shown text anywhere inside `el`; null without layout to ask. */
-function glyphBoxes(el: Element): Rect[] | null {
-  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  const range = el.ownerDocument.createRange();
-  const boxes: Rect[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (!node.nodeValue?.trim() || unseenText(node, el)) continue;
-    range.selectNodeContents(node);
-    const rects = range.getClientRects?.();
-    if (!rects?.length) return null;
-    boxes.push(...[...rects].filter((r) => r.width > 0 && r.height > 0));
-  }
-  return boxes;
-}
-
+const height = (r: Rect) => r.bottom - r.top;
+const holds = (r: Rect, x: number, y: number) =>
+  x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 const unite = (a: Rect, b: Rect): Rect => ({
   left: Math.min(a.left, b.left),
   right: Math.max(a.right, b.right),
   top: Math.min(a.top, b.top),
   bottom: Math.max(a.bottom, b.bottom),
 });
-const height = (r: Rect) => r.bottom - r.top;
-const holds = (r: Rect, x: number, y: number) =>
-  x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 
 /** Glyphs side by side on one line, no further apart than two line heights, join into one line box. */
 function lineBoxes(glyphs: readonly Rect[]): Rect[] {
@@ -99,18 +59,104 @@ function leadings(lines: readonly Rect[]): Rect[] {
   );
 }
 
-function textAt(el: Element, x: number, y: number): boolean {
-  const glyphs = glyphBoxes(el);
-  if (!glyphs) return true;
-  const lines = lineBoxes(glyphs);
-  return lines.some((line) => holds(line, x, y)) || leadings(lines).some((gap) => holds(gap, x, y));
-}
+/**
+ * Whether an element draws pixels of its own at (x, y). One probe serves one pick, so every
+ * candidate shares its text measurements.
+ */
+export function createDrawnProbe(doc: Document, x: number, y: number): (el: Element) => boolean {
+  const view = doc.defaultView;
+  const layout = typeof doc.createRange().getClientRects === "function";
+  const range = doc.createRange();
+  const glyphsOf = new Map<Node, Rect[]>();
+  const shownElement = new Map<Element, boolean>();
+  const shownTextNode = new Map<Node, boolean>();
 
-/** Pixels of its own at (x, y): a fill, a picture, a shape, a border, shadow or pseudo content, or its text there. */
-export function drawsAt(el: Element, x: number, y: number): boolean {
-  if (PICTURES.has(el.tagName)) return true;
-  if (el.namespaceURI === SVG_NS && el.tagName.toLowerCase() !== "g") return true;
-  const style = el.ownerDocument.defaultView?.getComputedStyle(el);
-  if (!style) return true;
-  return paints(style) || decorated(el, style) || textAt(el, x, y);
+  const shown = (el: Element): boolean => {
+    let known = shownElement.get(el);
+    if (known === undefined) {
+      const s = view!.getComputedStyle(el);
+      const faded =
+        Number.parseFloat(s.opacity) <= 0.01 && !el.hasAttribute(COLOR_GRADING_SOURCE_HIDDEN_ATTR);
+      known = s.display !== "none" && !faded;
+      shownElement.set(el, known);
+    }
+    return known;
+  };
+  const shownText = (node: Node): boolean => {
+    let known = shownTextNode.get(node);
+    if (known === undefined) {
+      const parent = node.parentElement;
+      const s = parent && node.nodeValue?.trim() ? view!.getComputedStyle(parent) : null;
+      known = Boolean(s) && s!.visibility !== "hidden" && !TRANSPARENT.test(s!.color);
+      shownTextNode.set(node, known);
+    }
+    return known;
+  };
+  // Only glyphs near the pointer's row can make a line or a leading that covers it.
+  const glyphsNear = (node: Node): Rect[] => {
+    let glyphs = glyphsOf.get(node);
+    if (glyphs) return glyphs;
+    glyphs = [];
+    range.selectNodeContents(node);
+    for (const r of range.getClientRects()) {
+      const h = r.bottom - r.top;
+      if (r.width > 0 && h > 0 && y >= r.top - 2 * h && y <= r.bottom + 2 * h) glyphs.push(r);
+    }
+    glyphsOf.set(node, glyphs);
+    return glyphs;
+  };
+
+  function textAt(el: Element): boolean {
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        node.nodeType === 1 && !shown(node as Element)
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const glyphs: Rect[] = [];
+    let examined = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType !== 3 || !shownText(node)) continue;
+      // No layout to ask (a DOM without rendering): shown text counts.
+      if (!layout) return true;
+      if (++examined > TEXT_BUDGET) break;
+      glyphs.push(...glyphsNear(node));
+    }
+    const lines = lineBoxes(glyphs);
+    return (
+      lines.some((line) => holds(line, x, y)) || leadings(lines).some((gap) => holds(gap, x, y))
+    );
+  }
+
+  function pseudoDraws(el: Element, pseudo: string): boolean {
+    const s = view!.getComputedStyle(el, pseudo);
+    if (!s.content || s.content === "none" || s.content === "normal" || s.display === "none")
+      return false;
+    return s.content !== '""' || paints(s) || borderWidths(s).some((w) => w > 0);
+  }
+
+  // A border draws on its band, not across the box it frames; an outer shadow draws outside the box.
+  function decoratedAt(el: Element, s: CSSStyleDeclaration): boolean {
+    if (/inset/.test(s.boxShadow)) return true;
+    const [top, right, bottom, left] = borderWidths(s) as [number, number, number, number];
+    if (top || right || bottom || left) {
+      const r = el.getBoundingClientRect();
+      const inner = {
+        left: r.left + left,
+        right: r.right - right,
+        top: r.top + top,
+        bottom: r.bottom - bottom,
+      };
+      if (!holds(inner, x, y)) return true;
+    }
+    return pseudoDraws(el, "::before") || pseudoDraws(el, "::after");
+  }
+
+  return (el) => {
+    if (PICTURES.has(el.tagName)) return true;
+    if (el.namespaceURI === SVG_NS) return !SVG_BOXES.has(el.localName);
+    if (!view) return true;
+    const s = view.getComputedStyle(el);
+    return paints(s) || decoratedAt(el, s) || textAt(el);
+  };
 }
