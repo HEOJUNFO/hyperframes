@@ -89,9 +89,8 @@ export function createDrawnProbe(doc: Document, x: number, y: number): (el: Elem
       if (!known && layout) {
         const r = el.getBoundingClientRect();
         const byFont = 3 * (Number.parseFloat(s.fontSize) || 16);
-        // A clipping box's text stays inside it; any other box may hold lines bigger than its font.
-        const clips = /hidden|clip|auto|scroll/.test(`${s.overflowX} ${s.overflowY}`);
-        const reach = clips ? byFont : Math.max(byFont, 2 * r.height);
+        // A box may hold lines bigger than its own font, up to about ten times it.
+        const reach = Math.max(byFont, Math.min(2 * r.height, (20 * byFont) / 3));
         known = (r.width > 0 || r.height > 0) && (y < r.top - reach || y > r.bottom + reach);
       }
       closedBox.set(el, known);

@@ -674,14 +674,14 @@ describe("createPickerModule", () => {
       }
     });
 
-    it("does not look for text outside a clipping box", () => {
+    it("caps how far a tall box's lines reach, at about ten times its font", () => {
       createPickerModule({ postMessage: createMockPostMessage() }).installPickerApi();
       document.body.innerHTML = `<div id="bg" style="${BG}"></div>
-        <div id="layer"><div id="clip" style="overflow-x: hidden; overflow-y: hidden"><p>Clipped words</p></div></div>`;
-      // The box's text runs up past its top edge, where the box clips it away.
-      at("clip").getBoundingClientRect = () =>
+        <div id="layer"><div id="tall"><p>Tall words</p></div></div>`;
+      // A 300px box of default-font text, 390px below the pointer: past the capped reach.
+      at("tall").getBoundingClientRect = () =>
         ({ left: 0, top: 400, right: 600, bottom: 700, width: 600, height: 300 }) as DOMRect;
-      const unlay = layOut({ "Clipped words": [0, 0, 100, 40] });
+      const unlay = layOut({ "Tall words": [0, 0, 100, 40] });
       const restore = emulateHitTest(() => [at("layer"), at("bg")]);
       try {
         expect(selectorsAt()).toEqual(["#bg"]);
