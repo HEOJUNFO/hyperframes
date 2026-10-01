@@ -1023,26 +1023,40 @@ describe("initSandboxRuntimeModular", () => {
     expect(timeline.time()).toBe(0);
   });
 
-  it("renders the requested instant, not the 30fps grid, for an exact renderSeek", () => {
-    const root = document.createElement("div");
-    root.setAttribute("data-composition-id", "main");
-    root.setAttribute("data-root", "true");
-    root.setAttribute("data-start", "0");
-    root.setAttribute("data-duration", "20");
-    root.setAttribute("data-fps", "29.97");
-    root.setAttribute("data-width", "1920");
-    root.setAttribute("data-height", "1080");
-    document.body.appendChild(root);
+  describe("issue #4430 sweep on a 29.97fps project", () => {
+    // `snapshot --at` times from the issue, with where the 30fps grid floors each one.
+    const sweep = [
+      { at: 19.019018, grid: 19 },
+      { at: 19.05, grid: 571 / 30 },
+    ];
 
-    const timeline = createMockTimeline(20);
-    window.__timelines = { main: timeline };
+    function seekOnNtscProject(at: number, options?: { exact?: boolean }): number {
+      const root = document.createElement("div");
+      root.setAttribute("data-composition-id", "main");
+      root.setAttribute("data-root", "true");
+      root.setAttribute("data-start", "0");
+      root.setAttribute("data-duration", "20");
+      root.setAttribute("data-fps", "29.97");
+      root.setAttribute("data-width", "1920");
+      root.setAttribute("data-height", "1080");
+      document.body.appendChild(root);
 
-    initSandboxRuntimeModular();
+      const timeline = createMockTimeline(20);
+      window.__timelines = { main: timeline };
 
-    // `snapshot --at 19.019018` on a 29.97fps project: the 30fps grid floors it to 19.0.
-    window.__player?.renderSeek(19.019018, { exact: true });
+      initSandboxRuntimeModular();
+      window.__player?.renderSeek(at, options);
+      return timeline.time();
+    }
 
-    expect(timeline.time()).toBe(19.019018);
+    it.each(sweep)("an exact renderSeek to $at lands on $at", ({ at }) => {
+      expect(seekOnNtscProject(at, { exact: true })).toBe(at);
+    });
+
+    // Frame export never passes `exact`, so its seeks keep flooring onto the frame grid.
+    it.each(sweep)("a default renderSeek to $at still floors to $grid", ({ at, grid }) => {
+      expect(seekOnNtscProject(at)).toBeCloseTo(grid, 9);
+    });
   });
 
   it("uses live child timeline duration when a composition host has no authored duration", () => {
